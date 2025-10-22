@@ -22,9 +22,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextObfuscationMode
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardColors
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedSecureTextField
@@ -35,6 +43,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextFieldColors
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,6 +56,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.ModifierLocalBeyondBoundsLayout
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -118,10 +128,6 @@ fun LoginCard(modifier: Modifier = Modifier, login: () -> Unit){
         }
     }
 
-    var password by rememberSaveable {
-        mutableStateOf("")
-    }
-
     var passwordIsError by rememberSaveable {
         mutableStateOf(false)
     }
@@ -130,19 +136,14 @@ fun LoginCard(modifier: Modifier = Modifier, login: () -> Unit){
         mutableStateOf("")
     }
 
+    val passwordState = rememberTextFieldState()
+    var passwordVisible by remember { mutableStateOf(false) }
+
     val validatePassword: () -> Unit = {
-        if (password.length < 8){
+        if (passwordState.text.length < 8){
             passwordIsError = true
             passwordError = "Password must be at least 8 characters"
         } else {
-            passwordIsError = false
-            passwordError = ""
-        }
-    }
-
-    val changePassword: (String) -> Unit = {
-        password = it
-        if (password.length >= 8){
             passwordIsError = false
             passwordError = ""
         }
@@ -156,14 +157,38 @@ fun LoginCard(modifier: Modifier = Modifier, login: () -> Unit){
         }
     }
 
+    LaunchedEffect(passwordState.text) {
+        if (passwordState.text.length >= 8){
+            passwordIsError = false
+            passwordError = ""
+        }
+    }
+
     OutlinedCard(modifier = modifier.wrapContentSize().defaultMinSize(300.dp, 50.dp).padding(3.dp), border = BorderStroke(2.dp, Teal)) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center, modifier = Modifier.padding(10.dp)) {
             Spacer(modifier = Modifier.height(10.dp))
             Text("Login", fontSize = 28.sp, color = Teal, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(10.dp))
-            OutlinedTextField(value = email, onValueChange = { changeEmail(it) }, label = {Text("Email")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal), isError = emailIsError, supportingText = { if (emailIsError) Text(emailError)})
+            OutlinedTextField(value = email, onValueChange = { changeEmail(it) }, label = {Text("Email")},
+                colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal), isError = emailIsError,
+                supportingText = { if (emailIsError) Text(emailError)}, )
             Spacer(modifier = Modifier.height(10.dp))
-            OutlinedTextField(value = password, onValueChange = { changePassword(it) }, label = {Text("Password")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal), isError = passwordIsError, supportingText = { if (passwordIsError) Text(passwordError)})
+            OutlinedSecureTextField(state = passwordState, label = {Text("Password")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal),
+                isError = passwordIsError, supportingText = { if (passwordIsError) Text(passwordError)},
+                trailingIcon = {
+                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        Icon(
+                            imageVector = if (passwordVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                            contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                        )
+                    }
+                },
+                textObfuscationMode = if (passwordVisible)
+                    TextObfuscationMode.Visible
+                else
+                    TextObfuscationMode.RevealLastTyped,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+            )
             Spacer(modifier = Modifier.height(10.dp))
             Button(onClick = {performLogin()}) {
                 Text("Login")
@@ -205,10 +230,6 @@ fun RegisterCard(modifier: Modifier = Modifier, register: () -> Unit){
         }
     }
 
-    var password by rememberSaveable {
-        mutableStateOf("")
-    }
-
     var passwordIsError by rememberSaveable {
         mutableStateOf(false)
     }
@@ -217,26 +238,17 @@ fun RegisterCard(modifier: Modifier = Modifier, register: () -> Unit){
         mutableStateOf("")
     }
 
+    val passwordState = rememberTextFieldState()
+    var passwordVisible by remember { mutableStateOf(false) }
+
     val validatePassword: () -> Unit = {
-        if (password.length < 8){
+        if (passwordState.text.length < 8){
             passwordIsError = true
             passwordError = "Password must be at least 8 characters"
         } else {
             passwordIsError = false
             passwordError = ""
         }
-    }
-
-    val changePassword: (String) -> Unit = {
-        password = it
-        if (password.length >= 8){
-            passwordIsError = false
-            passwordError = ""
-        }
-    }
-
-    var confirmPassword by rememberSaveable {
-        mutableStateOf("")
     }
 
     var confirmPasswordIsError by rememberSaveable {
@@ -247,19 +259,14 @@ fun RegisterCard(modifier: Modifier = Modifier, register: () -> Unit){
         mutableStateOf("")
     }
 
+    val confirmPasswordState = rememberTextFieldState()
+    var confirmPasswordVisible by remember { mutableStateOf(false) }
+
     val validateConfirmPassword: () -> Unit = {
-        if (password != confirmPassword){
+        if (passwordState.text != confirmPasswordState.text){
             confirmPasswordIsError = true
             confirmPasswordError = "Passwords do not match"
         } else {
-            confirmPasswordIsError = false
-            confirmPasswordError = ""
-        }
-    }
-
-    val changeConfirmPassword: (String) -> Unit = {
-        confirmPassword = it
-        if (password == confirmPassword){
             confirmPasswordIsError = false
             confirmPasswordError = ""
         }
@@ -270,7 +277,18 @@ fun RegisterCard(modifier: Modifier = Modifier, register: () -> Unit){
         validatePassword()
         validateConfirmPassword()
         if (!(emailIsError || passwordIsError || confirmPasswordIsError)){
-            register
+            register()
+        }
+    }
+
+    LaunchedEffect(passwordState.text, confirmPasswordState.text) {
+        if (passwordState.text.length >= 8){
+            passwordIsError = false
+            passwordError = ""
+        }
+        if (passwordState.text == confirmPasswordState.text){
+            confirmPasswordIsError = false
+            confirmPasswordError = ""
         }
     }
 
@@ -281,9 +299,40 @@ fun RegisterCard(modifier: Modifier = Modifier, register: () -> Unit){
             Spacer(modifier = Modifier.height(10.dp))
             OutlinedTextField(value = email, onValueChange = { changeEmail(it) }, label = {Text("Email")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal), isError = emailIsError, supportingText = { if (emailIsError) Text(emailError)})
             Spacer(modifier = Modifier.height(10.dp))
-            OutlinedTextField(value = password, onValueChange = { changePassword(it) }, label = {Text("Password")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal), isError = passwordIsError, supportingText = { if (passwordIsError) Text(passwordError)}, )
+            OutlinedSecureTextField(state = passwordState, label = {Text("Password")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal),
+                isError = passwordIsError, supportingText = { if (passwordIsError) Text(passwordError)},
+                trailingIcon = {
+                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        Icon(
+                            imageVector = if (passwordVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                            contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                        )
+                    }
+                },
+                textObfuscationMode = if (passwordVisible)
+                    TextObfuscationMode.Visible
+                else
+                    TextObfuscationMode.RevealLastTyped,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+            )
             Spacer(modifier = Modifier.height(10.dp))
-            OutlinedTextField(value = confirmPassword, onValueChange = { changeConfirmPassword(it) }, label = {Text("Confirm Password")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal), isError = confirmPasswordIsError, supportingText = { if (confirmPasswordIsError) Text(confirmPasswordError)})
+            OutlinedSecureTextField(state = confirmPasswordState, label = {Text("Confirm Password")},
+                colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal), isError = confirmPasswordIsError,
+                supportingText = { if (confirmPasswordIsError) Text(confirmPasswordError)},
+                trailingIcon = {
+                    IconButton(onClick = { confirmPasswordVisible = !confirmPasswordVisible }) {
+                        Icon(
+                            imageVector = if (confirmPasswordVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                            contentDescription = if (confirmPasswordVisible) "Hide password" else "Show password"
+                        )
+                    }
+                },
+                textObfuscationMode = if (confirmPasswordVisible)
+                    TextObfuscationMode.Visible
+                else
+                    TextObfuscationMode.RevealLastTyped,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+            )
             Spacer(modifier = Modifier.height(10.dp))
             Button(onClick = {performRegister()}) {
                 Text("Register")
