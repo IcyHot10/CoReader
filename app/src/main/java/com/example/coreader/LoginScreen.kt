@@ -50,32 +50,19 @@ import com.example.coreader.ui.theme.White
 @Composable
 fun LoginScreen(){
 
-    var email by remember {
-        mutableStateOf("")
+    var isLogin by remember {
+        mutableStateOf(true)
     }
 
-    var password by remember {
-        mutableStateOf("")
-    }
+    val setLogin = { isLogin = true }
+
+    val setRegister = { isLogin = false}
 
     Box(){
         Image(painter = painterResource(R.drawable.login1), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxSize(), alignment = Alignment.TopCenter)
         Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
             Spacer(modifier = Modifier.height(250.dp))
-            OutlinedCard(modifier = Modifier.wrapContentSize().defaultMinSize(300.dp, 50.dp).align(Alignment.CenterHorizontally).padding(3.dp), border = BorderStroke(2.dp, Teal)) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center, modifier = Modifier.padding(10.dp)) {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text("Login", fontSize = 28.sp, color = Teal, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(10.dp))
-                    OutlinedTextField(value = email, onValueChange = { email= it}, label = {Text("Email")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal))
-                    Spacer(modifier = Modifier.height(10.dp))
-                    OutlinedTextField(value = password, onValueChange = { password = it }, label = {Text("Password")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal))
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Button(onClick = {}) {
-                        Text("Login")
-                    }
-                }
-            }
+            if (isLogin) LoginCard() else RegisterCard()
             Spacer(modifier = Modifier.height(10.dp))
             Text("Forgot Password?", modifier = Modifier.clickable {})
             Spacer(modifier = Modifier.height(30.dp))
@@ -86,10 +73,80 @@ fun LoginScreen(){
                 Image(painter = painterResource(R.drawable.facebook), contentDescription = "Facebook Login", modifier = Modifier.size(30.dp).clickable{})
             }
         }
-        Row(modifier = Modifier.align(Alignment.BottomCenter).padding(20.dp)) {
-            Text("Already have an account? ")
-            Text("Sign In", color = Teal, fontWeight = FontWeight.Bold, modifier = Modifier.clickable{})
-        }
+        if (isLogin) LoginText(Modifier.align(Alignment.BottomCenter).padding(20.dp)){setRegister} else RegisterText(Modifier.align(Alignment.BottomCenter).padding(20.dp)){setLogin}
+    }
+}
+
+@Composable
+fun LoginCard(modifier: Modifier = Modifier){
+    var email by remember {
+        mutableStateOf("")
     }
 
+    var password by remember {
+        mutableStateOf("")
+    }
+
+    OutlinedCard(modifier = modifier.wrapContentSize().defaultMinSize(300.dp, 50.dp).padding(3.dp), border = BorderStroke(2.dp, Teal)) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center, modifier = Modifier.padding(10.dp)) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Text("Login", fontSize = 28.sp, color = Teal, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(10.dp))
+            OutlinedTextField(value = email, onValueChange = { email= it}, label = {Text("Email")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal))
+            Spacer(modifier = Modifier.height(10.dp))
+            OutlinedTextField(value = password, onValueChange = { password = it }, label = {Text("Password")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal))
+            Spacer(modifier = Modifier.height(10.dp))
+            Button(onClick = {}) {
+                Text("Login")
+            }
+        }
+    }
+}
+
+@Composable
+fun RegisterCard(modifier: Modifier = Modifier){
+    var email by remember {
+        mutableStateOf("")
+    }
+
+    var password by remember {
+        mutableStateOf("")
+    }
+
+    var confirmPassword by remember {
+        mutableStateOf("")
+    }
+
+    OutlinedCard(modifier = modifier.wrapContentSize().defaultMinSize(300.dp, 50.dp).padding(3.dp), border = BorderStroke(2.dp, Teal)) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center, modifier = Modifier.padding(10.dp)) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Text("Login", fontSize = 28.sp, color = Teal, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(10.dp))
+            OutlinedTextField(value = email, onValueChange = { email= it}, label = {Text("Email")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal))
+            Spacer(modifier = Modifier.height(10.dp))
+            OutlinedTextField(value = password, onValueChange = { password = it }, label = {Text("Password")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal))
+            Spacer(modifier = Modifier.height(10.dp))
+            OutlinedTextField(value = confirmPassword, onValueChange = { password = it }, label = {Text("Password")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal))
+            Spacer(modifier = Modifier.height(10.dp))
+            Button(onClick = {}) {
+                Text("Register")
+            }
+        }
+    }
+}
+
+@Composable
+fun LoginText(modifier: Modifier = Modifier, function: () -> Unit){
+    Row(modifier = modifier) {
+        Text("Don't have an account? ")
+        Text("Register", color = Teal, fontWeight = FontWeight.Bold, modifier = Modifier.clickable{function})
+    }
+}
+
+@Composable
+fun RegisterText(modifier: Modifier = Modifier, function: () -> Unit){
+    Row(modifier = modifier) {
+        Text("Already have an account? ")
+        Text("Sign In", color = Teal, fontWeight = FontWeight.Bold, modifier = Modifier.clickable{function})
+    }
 }
