@@ -56,7 +56,7 @@ fun LoginScreen(){
 
     val setLogin = { isLogin = true }
 
-    val setRegister = { isLogin = false}
+    val setRegister = { isLogin = false }
 
     Box(){
         Image(painter = painterResource(R.drawable.login1), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxSize(), alignment = Alignment.TopCenter)
@@ -73,7 +73,7 @@ fun LoginScreen(){
                 Image(painter = painterResource(R.drawable.facebook), contentDescription = "Facebook Login", modifier = Modifier.size(30.dp).clickable{})
             }
         }
-        if (isLogin) LoginText(Modifier.align(Alignment.BottomCenter).padding(20.dp)){setRegister} else RegisterText(Modifier.align(Alignment.BottomCenter).padding(20.dp)){setLogin}
+        if (isLogin) LoginText(Modifier.align(Alignment.BottomCenter).padding(20.dp)){setRegister()} else RegisterText(Modifier.align(Alignment.BottomCenter).padding(20.dp)){setLogin()}
     }
 }
 
@@ -126,7 +126,7 @@ fun RegisterCard(modifier: Modifier = Modifier){
             Spacer(modifier = Modifier.height(10.dp))
             OutlinedTextField(value = password, onValueChange = { password = it }, label = {Text("Password")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal))
             Spacer(modifier = Modifier.height(10.dp))
-            OutlinedTextField(value = confirmPassword, onValueChange = { password = it }, label = {Text("Password")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal))
+            OutlinedTextField(value = confirmPassword, onValueChange = { password = it }, label = {Text("Confirm Password")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal))
             Spacer(modifier = Modifier.height(10.dp))
             Button(onClick = {}) {
                 Text("Register")
@@ -139,7 +139,7 @@ fun RegisterCard(modifier: Modifier = Modifier){
 fun LoginText(modifier: Modifier = Modifier, function: () -> Unit){
     Row(modifier = modifier) {
         Text("Don't have an account? ")
-        Text("Register", color = Teal, fontWeight = FontWeight.Bold, modifier = Modifier.clickable{function})
+        Text("Register", color = Teal, fontWeight = FontWeight.Bold, modifier = Modifier.clickable{function()})
     }
 }
 
@@ -147,6 +147,6 @@ fun LoginText(modifier: Modifier = Modifier, function: () -> Unit){
 fun RegisterText(modifier: Modifier = Modifier, function: () -> Unit){
     Row(modifier = modifier) {
         Text("Already have an account? ")
-        Text("Sign In", color = Teal, fontWeight = FontWeight.Bold, modifier = Modifier.clickable{function})
+        Text("Sign In", color = Teal, fontWeight = FontWeight.Bold, modifier = Modifier.clickable{function()})
     }
 }
