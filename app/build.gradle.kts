@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.coreader"
+    namespace = "com.indeavour.coreader"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.coreader"
+        applicationId = "com.indeavour.coreader"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

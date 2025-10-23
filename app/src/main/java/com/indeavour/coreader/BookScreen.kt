@@ -1,4 +1,4 @@
-package com.example.coreader
+package com.indeavour.coreader
 
 import androidx.compose.runtime.Composable
 

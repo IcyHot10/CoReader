@@ -1,4 +1,4 @@
-package com.example.coreader.ui.theme
+package com.indeavour.coreader.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

@@ -1,6 +1,5 @@
-package com.example.coreader.ui.theme
+package com.indeavour.coreader.ui.theme
 
-import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
