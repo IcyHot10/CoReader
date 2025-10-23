@@ -78,13 +78,13 @@ fun LoginScreen(routeToLibrary : () -> Unit){
     Box(modifier = Modifier.background(MaterialTheme.colorScheme.tertiary)){
         Image(painter = painterResource(R.drawable.invis_background), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxSize(), alignment = Alignment.TopCenter)
         Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-            Spacer(modifier = Modifier.height(if (isLogin) 250.dp else 200.dp))
+            Spacer(modifier = Modifier.height(if (isLogin) 225.dp else 175.dp))
             if (isLogin) LoginCard(login = routeToLibrary) else RegisterCard( register = routeToLibrary)
             if (isLogin) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Text("Forgot Password?", modifier = Modifier.clickable {}, color = MaterialTheme.colorScheme.onTertiary)
             }
-            Spacer(modifier = Modifier.height(30.dp))
+            Spacer(modifier = Modifier.height(20.dp))
             Text("Or sign in with", color = MaterialTheme.colorScheme.onTertiary)
             Spacer(modifier = Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.width(150.dp)) {

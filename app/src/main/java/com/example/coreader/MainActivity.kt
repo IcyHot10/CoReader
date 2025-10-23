@@ -34,8 +34,12 @@ fun AppNavigation(){
     val navController = rememberNavController()
 
     NavHost(navController = navController, startDestination = "login") {
-        composable("login") { LoginScreen(routeToLibrary = {navController.navigate("library")}) }
-        composable("library") { LibraryScreen(routeToLogin = {navController.navigate("login")}, routeToBook = {navController.navigate("book")}) }
+        composable("login") { LoginScreen(routeToLibrary = {navController.navigate("library"){
+            popUpTo("login") { inclusive = true }
+        } }) }
+        composable("library") { LibraryScreen(routeToLogin = {navController.navigate("login"){
+            popUpTo("library") { inclusive = true }
+        } }, routeToBook = {navController.navigate("book")}) }
         composable("book") { BookScreen(routeToLibrary = {navController.navigate("library")}) }
     }
 }
