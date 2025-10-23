@@ -24,7 +24,8 @@ private val DarkColorScheme = darkColorScheme(
     onError = Color.Red,
     onErrorContainer = Color.Red,
     error = Color.Red,
-    errorContainer = Color.Red
+    errorContainer = Color.Red,
+    primaryContainer = Teal
 )
 
 private val LightColorScheme = lightColorScheme(
@@ -32,7 +33,8 @@ private val LightColorScheme = lightColorScheme(
     secondary = BottleGreen,
     tertiary = White,
     surface = LightTeal,
-    onTertiary = Black
+    onTertiary = Black,
+    primaryContainer = Teal
 
     /* Other default colors to override
     background = Color(0xFFFFFBFE),

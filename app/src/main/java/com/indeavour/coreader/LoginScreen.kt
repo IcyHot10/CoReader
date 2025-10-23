@@ -283,7 +283,7 @@ fun RegisterCard(modifier: Modifier = Modifier, register: () -> Unit){
     OutlinedCard(modifier = modifier.wrapContentSize().defaultMinSize(300.dp, 50.dp).padding(3.dp), border = BorderStroke(2.dp, Teal)) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center, modifier = Modifier.padding(10.dp)) {
             Spacer(modifier = Modifier.height(10.dp))
-            Text("Login", fontSize = 28.sp, color = Teal, fontWeight = FontWeight.Bold)
+            Text("Register", fontSize = 28.sp, color = Teal, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(10.dp))
             OutlinedTextField(value = email, onValueChange = { changeEmail(it) }, label = {Text("Email")}, colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Teal), isError = emailIsError, supportingText = { if (emailIsError) Text(emailError)})
             Spacer(modifier = Modifier.height(10.dp))
