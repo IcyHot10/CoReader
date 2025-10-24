@@ -1,4 +1,4 @@
-package com.indeavour.coreader
+package com.indeavour.coreader.screen
 
 import androidx.compose.runtime.Composable
 

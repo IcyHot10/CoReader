@@ -1,4 +1,4 @@
-package com.indeavour.coreader
+package com.indeavour.coreader.screen
 
 import android.util.Patterns
 import androidx.compose.foundation.BorderStroke
@@ -45,15 +45,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.indeavour.coreader.AppUtils
+import com.indeavour.coreader.R
 import com.indeavour.coreader.ui.theme.Teal
+import com.indeavour.coreader.viewmodel.AuthViewModel
 
 @Composable
-fun LoginScreen(routeToLibrary : () -> Unit){
+fun LoginScreen(routeToLibrary : () -> Unit, authViewModel: AuthViewModel = viewModel()){
 
     var isLogin by remember {
         mutableStateOf(true)
@@ -67,7 +72,7 @@ fun LoginScreen(routeToLibrary : () -> Unit){
         Image(painter = painterResource(R.drawable.invis_background), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxSize(), alignment = Alignment.TopCenter)
         Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
             Spacer(modifier = Modifier.height(if (isLogin) 225.dp else 175.dp))
-            if (isLogin) LoginCard(login = routeToLibrary) else RegisterCard( register = routeToLibrary)
+            if (isLogin) LoginCard(login = routeToLibrary, authViewModel = authViewModel) else RegisterCard( register = routeToLibrary, authViewModel = authViewModel)
             if (isLogin) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Text("Forgot Password?", modifier = Modifier.clickable {}, color = MaterialTheme.colorScheme.onTertiary)
@@ -85,7 +90,9 @@ fun LoginScreen(routeToLibrary : () -> Unit){
 }
 
 @Composable
-fun LoginCard(modifier: Modifier = Modifier, login: () -> Unit){
+fun LoginCard(modifier: Modifier = Modifier, login: () -> Unit, authViewModel: AuthViewModel){
+    val context = LocalContext.current
+
     var email by rememberSaveable {
         mutableStateOf("")
     }
@@ -141,7 +148,13 @@ fun LoginCard(modifier: Modifier = Modifier, login: () -> Unit){
         validateEmail()
         validatePassword()
         if (!(emailIsError || passwordIsError)){
-            login()
+            authViewModel.login(email, passwordState.text.toString()) { success, message ->
+                if (success) {
+                    login()
+                } else {
+                    AppUtils.showToast(context, message)
+                }
+            }
         }
     }
 
@@ -186,7 +199,7 @@ fun LoginCard(modifier: Modifier = Modifier, login: () -> Unit){
 }
 
 @Composable
-fun RegisterCard(modifier: Modifier = Modifier, register: () -> Unit){
+fun RegisterCard(modifier: Modifier = Modifier, register: () -> Unit, authViewModel: AuthViewModel){
 
     var email by rememberSaveable {
         mutableStateOf("")
@@ -199,6 +212,8 @@ fun RegisterCard(modifier: Modifier = Modifier, register: () -> Unit){
     var emailError by rememberSaveable {
         mutableStateOf("")
     }
+
+    val context = LocalContext.current
 
     val validateEmail: () -> Unit = {
         if (!Patterns.EMAIL_ADDRESS.matcher(email).matches() || email.isBlank()){
@@ -265,7 +280,14 @@ fun RegisterCard(modifier: Modifier = Modifier, register: () -> Unit){
         validatePassword()
         validateConfirmPassword()
         if (!(emailIsError || passwordIsError || confirmPasswordIsError)){
-            register()
+            authViewModel.signup(email, passwordState.text.toString()){
+                success, message ->
+                if (success){
+                    register()
+                } else {
+                    AppUtils.showToast(context, message)
+                }
+            }
         }
     }
 
