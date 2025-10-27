@@ -68,6 +68,9 @@ fun LoginScreen(routeToLibrary : () -> Unit, authViewModel: AuthViewModel = view
 
     val setRegister = { isLogin = false }
 
+    val context = LocalContext.current
+
+
     Box(modifier = Modifier.background(MaterialTheme.colorScheme.tertiary)){
         Image(painter = painterResource(R.drawable.invis_background), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxSize(), alignment = Alignment.TopCenter)
         Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -81,8 +84,15 @@ fun LoginScreen(routeToLibrary : () -> Unit, authViewModel: AuthViewModel = view
             Text("Or sign in with", color = MaterialTheme.colorScheme.onTertiary)
             Spacer(modifier = Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.width(150.dp)) {
-                Image(painter = painterResource(R.drawable.google), contentDescription = "Google Login", modifier = Modifier.size(30.dp).clickable{})
-                Image(painter = painterResource(R.drawable.facebook), contentDescription = "Facebook Login", modifier = Modifier.size(30.dp).clickable{})
+                Image(painter = painterResource(R.drawable.google), contentDescription = "Google Login", modifier = Modifier.size(30.dp).clickable{ authViewModel.signInWithGoogle(context){
+                    success, message ->
+                    if (success){
+                        routeToLibrary()
+                    } else {
+                        AppUtils.showToast(context, message)
+                    }
+                } })
+                Image(painter = painterResource(R.drawable.facebook), contentDescription = "Facebook Login", modifier = Modifier.size(30.dp).clickable{ AppUtils.showToast(context, "Coming soon") })
             }
         }
         if (isLogin) LoginText(Modifier.align(Alignment.BottomCenter).padding(WindowInsets.navigationBars.asPaddingValues())){setRegister()} else RegisterText(Modifier.align(Alignment.BottomCenter).padding(WindowInsets.navigationBars.asPaddingValues())){setLogin()}

@@ -1,5 +1,7 @@
 package com.indeavour.coreader.screen
 
+import android.content.ContentValues.TAG
+import android.util.Log
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -39,14 +41,23 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.sp
+import androidx.credentials.ClearCredentialStateRequest
+import androidx.credentials.CredentialManager
+import androidx.credentials.exceptions.ClearCredentialException
+import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -99,14 +110,16 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
                 }
                 HorizontalDivider(thickness = 10.dp, color = Teal)
             }
-            if (displaySideMenu) SideMenu(Modifier.width(325.dp))
+            if (displaySideMenu) SideMenu(Modifier.width(325.dp), routeToLogin)
             if (displayMoreMenu) MoreMenu(Modifier.width(200.dp).height(150.dp).align(Alignment.TopEnd))
         }
     }
 }
 
 @Composable
-fun SideMenu(modifier: Modifier){
+fun SideMenu(modifier: Modifier, routeToLogin: () -> Unit){
+    val auth = FirebaseAuth.getInstance()
+    val context = LocalContext.current
     Column(modifier = modifier.fillMaxSize().background(color = MaterialTheme.colorScheme.primaryContainer), verticalArrangement = Arrangement.SpaceBetween) {
         Column() {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()){
@@ -138,7 +151,17 @@ fun SideMenu(modifier: Modifier){
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()){
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = { }) {
+                IconButton(onClick = {
+                    auth.signOut()
+                    try {
+                        val credentialManager = CredentialManager.create(context)
+                        val clearRequest = ClearCredentialStateRequest()
+                        CoroutineScope(Dispatchers.Main).launch { credentialManager.clearCredentialState(clearRequest) }
+                    } catch (e: ClearCredentialException) {
+                        Log.e(TAG, "Couldn't clear user credentials: ${e.localizedMessage}")
+                    }
+                    routeToLogin()
+                }) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Logout,
                         contentDescription = "Logout",
