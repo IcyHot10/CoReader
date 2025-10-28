@@ -162,6 +162,13 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
                             BookCard(book, routeToBook, Modifier.weight(1f))
                             Spacer(modifier = Modifier.width(4.dp))
                         }
+                        if (row.size < 3){
+                            for (i in 0 until 3 - row.size) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Spacer(modifier = Modifier.weight(1f))
+                                Spacer(modifier = Modifier.width(4.dp))
+                            }
+                        }
                     }
                     HorizontalDivider(thickness = 10.dp, color = Teal)
                 }
@@ -179,7 +186,8 @@ fun BookCard(book: RoomBook, routeToBook: () -> Unit, modifier: Modifier = Modif
         Image(
             bitmap = book.cover?.let { BitmapFactory.decodeFile(it) }?.asImageBitmap() ?: ImageBitmap.imageResource(R.drawable.logo),
             contentDescription = book.title,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth().height(175.dp),
+            contentScale = ContentScale.Crop
         )
     }
 }
