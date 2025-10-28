@@ -46,7 +46,7 @@ fun AppNavigation(){
                 }
             }, routeToBook = { navController.navigate("book") })
         }
-        composable("book") { BookScreen(routeToLibrary = { navController.navigate("library") }) }
+        composable("book") { }//BookScreen(routeToLibrary = { navController.navigate("library") }) }
     }
 }
 
