@@ -1,6 +1,7 @@
 package com.indeavour.coreader.screen
 
 import android.content.ContentValues.TAG
+import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Log
@@ -9,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,7 +21,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -75,6 +79,7 @@ import com.indeavour.coreader.model.room.RoomBook
 import kotlinx.coroutines.withContext
 import org.readium.adapter.pdfium.document.PdfiumDocumentFactory
 import org.readium.r2.shared.publication.Publication
+import org.readium.r2.shared.publication.services.content.content
 import org.readium.r2.shared.publication.services.cover
 import org.readium.r2.shared.util.asset.Asset
 import org.readium.r2.shared.util.asset.AssetRetriever
@@ -154,12 +159,12 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
     }) {
         innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            Column(modifier = Modifier.fillMaxSize().align(Alignment.TopCenter), verticalArrangement = Arrangement.Top) {
+            Column(modifier = Modifier.fillMaxSize().align(Alignment.TopCenter).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.Top) {
                 for (row in books){
                     Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         for (book in row){
                             Spacer(modifier = Modifier.width(4.dp))
-                            BookCard(book, routeToBook, Modifier.weight(1f))
+                            BookCard(book, routeToBook, Modifier.weight(1f), context)
                             Spacer(modifier = Modifier.width(4.dp))
                         }
                         if (row.size < 3){
@@ -180,8 +185,13 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
 }
 
 @Composable
-fun BookCard(book: RoomBook, routeToBook: () -> Unit, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.clickable( onClick = {routeToBook()}), verticalArrangement = Arrangement.SpaceEvenly, horizontalAlignment = Alignment.CenterHorizontally) {
+fun BookCard(book: RoomBook, routeToBook: () -> Unit, modifier: Modifier = Modifier, context: Context) {
+    val database by lazy { AppRoomDatabase.getDatabase(context = context) }
+    Column(modifier = modifier.clickable( onClick = {
+        database.bookDao().setInActive()
+        database.bookDao().setActive(book.id)
+        routeToBook()
+    }), verticalArrangement = Arrangement.SpaceEvenly, horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(modifier = Modifier.height(10.dp))
         Image(
             bitmap = book.cover?.let { BitmapFactory.decodeFile(it) }?.asImageBitmap() ?: ImageBitmap.imageResource(R.drawable.logo),

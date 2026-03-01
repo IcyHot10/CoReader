@@ -1,6 +1,7 @@
 package com.indeavour.coreader.viewmodel
 
 import android.content.Context
+import android.util.Log
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
@@ -75,6 +76,29 @@ class AuthViewModel : ViewModel() {
                     auth.signInWithCredential(credential).addOnCompleteListener {
                         if(it.isSuccessful) {
                             onResult(true, "Google Signin Successful")
+                            Log.d("Google Signin New", it.result?.additionalUserInfo?.isNewUser.toString())
+                            if(it.result?.additionalUserInfo?.isNewUser?:false) {
+                                val userId = it.result?.user?.uid
+                                val userModel = UserModel(
+                                    userId!!,
+                                    it.result.user!!.email!!,
+                                    it.result.user!!.email!!,
+                                    null
+                                )
+                                firestore.collection("users").document(userId).set(userModel)
+                                    .addOnCompleteListener { dbTask ->
+                                        if (dbTask.isSuccessful) {
+                                            onResult(true, "Signup Successful")
+                                        } else {
+                                            onResult(
+                                                false,
+                                                dbTask.exception?.localizedMessage
+                                                    ?: "Signup Failed"
+                                            )
+                                        }
+
+                                    }
+                            }
                         } else {
                             onResult(false, it.exception?.localizedMessage ?: "Google Signin Failed")
                         }

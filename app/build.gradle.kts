@@ -58,6 +58,8 @@ dependencies {
     implementation(libs.androidx.credentials.play.services.auth)
     implementation(libs.googleid)
     implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.appcompat)
     ksp(libs.androidx.room.compiler)
     annotationProcessor(libs.androidx.room.compiler)
     implementation(libs.androidx.room.ktx)
@@ -75,5 +77,6 @@ dependencies {
     implementation(libs.readium.navigator)
     implementation(libs.readium.opds)
     implementation(libs.readium.adapter.pdfium)
+    implementation(libs.kotlinx.collections.immutable)
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 }
