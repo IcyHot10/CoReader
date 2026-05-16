@@ -135,6 +135,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
         ModalNavigationDrawer(
             drawerState = drawerState,
+            gesturesEnabled = drawerState.isOpen,
             drawerContent = {
                 ModalDrawerSheet(
                     modifier = Modifier.fillMaxWidth(0.8f),
