@@ -16,17 +16,30 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.indeavour.coreader.viewmodel.ReaderViewModel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import android.graphics.PointF
+import org.readium.r2.navigator.VisualNavigator
 import org.readium.r2.navigator.epub.EpubNavigatorFactory
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
+import org.readium.r2.navigator.input.InputListener
+import org.readium.r2.navigator.input.TapEvent
+import org.readium.r2.shared.ExperimentalReadiumApi
 import org.readium.r2.shared.publication.Publication
+import org.readium.r2.shared.util.AbsoluteUrl
 
-class ReaderFragment : Fragment() {
+@OptIn(ExperimentalReadiumApi::class)
+class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener {
 
     private lateinit var viewModel: ReaderViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         viewModel = ViewModelProvider(requireActivity(), ReaderViewModel.Factory)[ReaderViewModel::class.java]
+
+        childFragmentManager.addFragmentOnAttachListener { _, fragment ->
+            if (fragment is EpubNavigatorFragment) {
+                fragment.addInputListener(this)
+            }
+        }
     }
 
     private var containerId: Int = -1
@@ -74,13 +87,37 @@ class ReaderFragment : Fragment() {
     private fun showPublication(publication: Publication) {
         Log.d("ReaderFragment", "showPublication")
         // We use the EpubNavigatorFactory provided by Readium to create the navigator fragment factory.
-        val factory = EpubNavigatorFactory(publication).createFragmentFactory(initialLocator = null)
+        val factory = EpubNavigatorFactory(publication).createFragmentFactory(initialLocator = null, listener = this)
         
         // Set the custom FragmentFactory for this FragmentManager
         childFragmentManager.fragmentFactory = factory
         
         childFragmentManager.beginTransaction()
-            .replace(containerId, EpubNavigatorFragment::class.java, null)
+            .replace(containerId, EpubNavigatorFragment::class.java, null, "navigator")
             .commit()
+    }
+
+    override fun onTap(event: TapEvent): Boolean {
+        val point = event.point
+        Log.d("ReaderFragment", "onTap at $point")
+        val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment ?: return false
+        
+        val width = view?.width ?: return false
+        
+        return when {
+            point.x < width * 0.3 -> {
+                navigator.goBackward(animated = true)
+                true
+            }
+            point.x > width * 0.7 -> {
+                navigator.goForward(animated = true)
+                true
+            }
+            else -> false
+        }
+    }
+
+    override fun onExternalLinkActivated(url: AbsoluteUrl) {
+        // Handle external links
     }
 }
