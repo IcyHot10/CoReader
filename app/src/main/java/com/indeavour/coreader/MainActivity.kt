@@ -1,7 +1,6 @@
 package com.indeavour.coreader
 
 import android.os.Bundle
-import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
@@ -14,6 +13,7 @@ import com.indeavour.coreader.screen.BookScreen
 import com.indeavour.coreader.screen.LibraryScreen
 import com.indeavour.coreader.screen.LoginScreen
 import com.indeavour.coreader.ui.theme.CoReaderTheme
+import androidx.fragment.app.FragmentActivity
 
 class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {

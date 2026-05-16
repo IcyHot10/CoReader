@@ -38,8 +38,7 @@ fun BookScreen(routeToLibrary: () -> Unit) {
         viewModel.loadActiveBook()
     }
 
-    val containerId = remember { View.generateViewId() }
-    Log.d("BookScreen", "publication: $publication, error: $error, containerId: $containerId")
+    Log.d("BookScreen", "publication: $publication, error: $error")
 
     Box(modifier = Modifier.fillMaxSize()) {
         if (publication != null) {
@@ -48,7 +47,7 @@ fun BookScreen(routeToLibrary: () -> Unit) {
                 factory = { context ->
                     Log.d("BookScreen", "AndroidView factory called")
                     FragmentContainerView(context).apply {
-                        id = containerId
+                        id = com.indeavour.coreader.R.id.book_container
                         val activity = context as? FragmentActivity
                         Log.d("BookScreen", "Activity: $activity")
                         activity?.supportFragmentManager?.beginTransaction()

@@ -73,6 +73,7 @@ import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.getValue
 import com.indeavour.coreader.AppRoomDatabase
 import com.indeavour.coreader.AppUtils
@@ -191,10 +192,12 @@ fun BookCard(book: RoomBook, routeToBook: () -> Unit, modifier: Modifier = Modif
     val database by lazy { AppRoomDatabase.getDatabase(context = context) }
     val scope = rememberCoroutineScope()
     Column(modifier = modifier.clickable( onClick = {
-        scope.launch {
+        scope.launch(Dispatchers.IO) {
             database.bookDao().setInActive()
             database.bookDao().setActive(book.id)
-            routeToBook()
+            withContext(Dispatchers.Main) {
+                routeToBook()
+            }
         }
     }), verticalArrangement = Arrangement.SpaceEvenly, horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(modifier = Modifier.height(10.dp))

@@ -7,20 +7,34 @@ import android.view.View
 import android.view.ViewGroup
 import android.util.Log
 import android.widget.FrameLayout
-import android.widget.ProgressBar
-import android.widget.TextView
-import androidx.appcompat.widget.Toolbar
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.updatePadding
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.fragment.app.Fragment
+import androidx.fragment.app.FragmentFactory
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.indeavour.coreader.R
 import com.indeavour.coreader.ui.theme.CoReaderTheme
+import com.indeavour.coreader.ui.theme.Teal
 import com.indeavour.coreader.viewmodel.ReaderViewModel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -37,44 +51,39 @@ import org.readium.r2.shared.ExperimentalReadiumApi
 import org.readium.r2.shared.publication.Locator
 import org.readium.r2.shared.publication.Publication
 import org.readium.r2.shared.util.AbsoluteUrl
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.ComposeView
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.*
-import androidx.compose.runtime.collectAsState
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.ui.unit.sp
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material3.*
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.statusBars
 
 @OptIn(ExperimentalReadiumApi::class)
 class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener, EpubNavigatorFragment.PaginationListener {
 
     private lateinit var viewModel: ReaderViewModel
-    private var containerId: Int = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Set a fallback factory to prevent InstantiationException during restoration
+        // for fragments that require special factories (like EpubNavigatorFragment).
+        val defaultFactory = childFragmentManager.fragmentFactory
+        childFragmentManager.fragmentFactory = object : FragmentFactory() {
+            override fun instantiate(classLoader: ClassLoader, className: String): Fragment {
+                return try {
+                    defaultFactory.instantiate(classLoader, className)
+                } catch (e: Exception) {
+                    if (className.contains("EpubNavigatorFragment")) {
+                        Fragment() // Placeholder to be removed immediately
+                    } else {
+                        throw e
+                    }
+                }
+            }
+        }
+
         super.onCreate(savedInstanceState)
         viewModel = ViewModelProvider(requireActivity(), ReaderViewModel.Factory)[ReaderViewModel::class.java]
+
+        // Clear any restored navigator fragments to avoid "Fragment does not have a view" errors
+        // because the container (R.id.reader_container) is not available during restoration.
+        // We will re-add it in showPublication when the Compose UI is ready.
+        childFragmentManager.findFragmentByTag("navigator")?.let {
+            childFragmentManager.beginTransaction().remove(it).commitNow()
+        }
 
         childFragmentManager.addFragmentOnAttachListener { _, fragment ->
             if (fragment is EpubNavigatorFragment) {
@@ -104,13 +113,16 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         var isInterfaceVisible by remember { mutableStateOf(false) }
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
+        var isContainerReady by remember { mutableStateOf(false) }
 
         val colorScheme = MaterialTheme.colorScheme
         
         // Update Readium configuration when theme changes
-        LaunchedEffect(colorScheme, publication) {
-            publication?.let {
-                showPublication(it, colorScheme)
+        LaunchedEffect(colorScheme, publication, isContainerReady) {
+            if (isContainerReady) {
+                publication?.let {
+                    showPublication(it, colorScheme)
+                }
             }
         }
         
@@ -126,7 +138,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             drawerContent = {
                 ModalDrawerSheet(
                     modifier = Modifier.fillMaxWidth(0.8f),
-                    drawerContainerColor = com.indeavour.coreader.ui.theme.Teal,
+                    drawerContainerColor = Teal,
                     drawerContentColor = colorScheme.secondary
                 ) {
                     Spacer(Modifier.height(12.dp))
@@ -167,22 +179,18 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     // Navigator Container
-                    // FragmentContainerView for Readium Navigator
                     AndroidViewBinding(
                         factory = { inflater, parent, attachToParent ->
-                            val root = FrameLayout(inflater.context).apply {
-                                id = View.generateViewId()
+                            FrameLayout(inflater.context).apply {
+                                id = R.id.reader_container
                                 layoutParams = ViewGroup.LayoutParams(
                                     ViewGroup.LayoutParams.MATCH_PARENT,
                                     ViewGroup.LayoutParams.MATCH_PARENT
                                 )
+                                post { isContainerReady = true }
                             }
-                            containerId = root.id
-                            root
                         },
-                        update = {
-                            // This will be called when showPublication is triggered from onViewCreated
-                        },
+                        update = { },
                         modifier = Modifier.weight(1f).fillMaxWidth()
                     )
 
@@ -217,7 +225,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     modifier = Modifier.align(Alignment.BottomCenter)
                 ) {
                     Surface(
-                        color = com.indeavour.coreader.ui.theme.Teal,
+                        color = Teal,
                         tonalElevation = 2.dp,
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -285,7 +293,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     modifier = Modifier.align(Alignment.TopCenter)
                 ) {
                     Surface(
-                        color = com.indeavour.coreader.ui.theme.Teal,
+                        color = Teal,
                         tonalElevation = 2.dp,
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -359,7 +367,8 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         publication: Publication,
         colorScheme: androidx.compose.material3.ColorScheme? = null
     ) {
-        if (containerId == -1) return
+        val container = view?.findViewById<View>(R.id.reader_container)
+        if (container == null) return
 
         val theme = if (colorScheme?.background?.toArgb() == Color.BLACK || 
             (colorScheme?.background?.toArgb() ?: 0) < 0xFF444444.toInt()) {
@@ -394,7 +403,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         childFragmentManager.fragmentFactory = factory
 
         val transaction = childFragmentManager.beginTransaction()
-            .replace(containerId, EpubNavigatorFragment::class.java, null, "navigator")
+            .replace(R.id.reader_container, EpubNavigatorFragment::class.java, null, "navigator")
 
         transaction.runOnCommit {
             colorScheme?.let { scheme ->
@@ -431,5 +440,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         viewModel.updateProgress(pageIndex, totalPages, locator)
     }
 
-    override fun onExternalLinkActivated(url: AbsoluteUrl) {}
+    override fun onExternalLinkActivated(url: AbsoluteUrl) {
+        // Handle external links
+    }
 }
