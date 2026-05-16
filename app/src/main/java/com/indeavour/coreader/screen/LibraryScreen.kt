@@ -13,6 +13,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -187,10 +189,13 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
 @Composable
 fun BookCard(book: RoomBook, routeToBook: () -> Unit, modifier: Modifier = Modifier, context: Context) {
     val database by lazy { AppRoomDatabase.getDatabase(context = context) }
+    val scope = rememberCoroutineScope()
     Column(modifier = modifier.clickable( onClick = {
-        database.bookDao().setInActive()
-        database.bookDao().setActive(book.id)
-        routeToBook()
+        scope.launch {
+            database.bookDao().setInActive()
+            database.bookDao().setActive(book.id)
+            routeToBook()
+        }
     }), verticalArrangement = Arrangement.SpaceEvenly, horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(modifier = Modifier.height(10.dp))
         Image(
@@ -315,9 +320,9 @@ fun MoreMenu(modifier: Modifier, toggle: () -> Unit){
                         if (publication is Publication){
                             database.bookDao().insert(RoomBook(
                                 title = publication.metadata.title ?: "Untitled Book",
-                                author = publication.metadata.authors[0].name,
-                                cover = if (publication.cover() != null ) AppUtils.saveBitmapToInternalStorage(context, publication.cover()!!, publication.metadata.title ?: "Untitled Book") else null,
-                                filePath = uri.path.toString(),
+                                author = publication.metadata.authors.firstOrNull()?.name ?: "Unknown Author",
+                                cover = publication.cover()?.let { AppUtils.saveBitmapToInternalStorage(context, it, publication.metadata.title ?: "Untitled Book") },
+                                filePath = destFile.absolutePath,
                                 isFavourite = false,
                                 uri = uri.toString()
                             ))

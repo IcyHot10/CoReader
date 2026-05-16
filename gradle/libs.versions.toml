@@ -27,6 +27,7 @@ roomRuntime = "2.8.3"
 ksp = "2.0.21-1.0.27"
 foundation = "1.9.4"
 appcompat = "1.7.1"
+lifecycleViewmodelKtx = "2.10.0"
 
 [libraries]
 androidx-compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended", version.ref = "materialIconsExtended" }
@@ -62,6 +63,7 @@ readium-shared = { module = "org.readium.kotlin-toolkit:readium-shared", version
 readium-streamer = { module = "org.readium.kotlin-toolkit:readium-streamer", version.ref = "readiumStreamer" }
 androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation", version.ref = "foundation" }
 androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+androidx-lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-ktx", version.ref = "lifecycleViewmodelKtx" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
