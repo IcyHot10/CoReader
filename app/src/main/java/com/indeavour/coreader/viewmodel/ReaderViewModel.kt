@@ -23,8 +23,37 @@ class ReaderViewModel(
     private val _publication = MutableStateFlow<Publication?>(null)
     val publication: StateFlow<Publication?> = _publication
 
+    data class ReadingProgress(
+        val value: Float = 0f,
+        val pageLabel: String = "",
+        val percentageLabel: String = "",
+        val chapterLabel: String = ""
+    )
+
+    private val _progress = MutableStateFlow(ReadingProgress())
+    val progress: StateFlow<ReadingProgress> = _progress
+
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
+
+    fun updateProgress(pageIndex: Int, totalPages: Int, locator: org.readium.r2.shared.publication.Locator) {
+        val pub = _publication.value
+        val chapterLabel = pub?.let {
+            val totalChapters = it.readingOrder.size
+            val currentChapterIndex = it.readingOrder.indexOfFirst { link -> link.url() == locator.href }
+            if (currentChapterIndex != -1) {
+                "Chapter ${currentChapterIndex + 1} of $totalChapters"
+            } else ""
+        } ?: ""
+
+        val progression = locator.locations.totalProgression?.toFloat() ?: (pageIndex.toFloat() / totalPages.coerceAtLeast(1))
+        _progress.value = ReadingProgress(
+            value = progression,
+            pageLabel = "Page ${pageIndex + 1} of $totalPages",
+            percentageLabel = "${(progression * 100).toInt()}%",
+            chapterLabel = chapterLabel
+        )
+    }
 
     fun loadActiveBook() {
         Log.d("ReaderViewModel", "loadActiveBook called")
