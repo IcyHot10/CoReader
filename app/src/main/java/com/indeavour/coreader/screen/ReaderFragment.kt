@@ -49,11 +49,22 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.ui.unit.sp
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material3.*
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
 
 @OptIn(ExperimentalReadiumApi::class)
 class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener, EpubNavigatorFragment.PaginationListener {
@@ -90,6 +101,9 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     private fun ReaderScreen() {
         val publication by viewModel.publication.collectAsState()
         val progress by viewModel.progress.collectAsState()
+        var isInterfaceVisible by remember { mutableStateOf(false) }
+        val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+        val scope = rememberCoroutineScope()
 
         val colorScheme = MaterialTheme.colorScheme
         
@@ -99,95 +113,213 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                 showPublication(it, colorScheme)
             }
         }
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(colorScheme.background)
-        ) {
-            // Navigator Container
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            ) {
-                // FragmentContainerView for Readium Navigator
-                AndroidViewBinding(
-                    factory = { inflater, parent, attachToParent ->
-                        val root = FrameLayout(inflater.context).apply {
-                            id = View.generateViewId()
-                            layoutParams = ViewGroup.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
-                            )
-                        }
-                        containerId = root.id
-                        root
-                    },
-                    update = {
-                        // This will be called when showPublication is triggered from onViewCreated
-                    }
-                )
+        
+        // Separately handle the toggle callback update
+        LaunchedEffect(isInterfaceVisible) {
+            onToggleInterface = {
+                isInterfaceVisible = !isInterfaceVisible
             }
+        }
 
-            // Bottom Progress Bar
-            Surface(
-                color = colorScheme.surface,
-                tonalElevation = 2.dp,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .windowInsetsPadding(WindowInsets.navigationBars)
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                ModalDrawerSheet(
+                    modifier = Modifier.fillMaxWidth(0.8f),
+                    drawerContainerColor = com.indeavour.coreader.ui.theme.Teal,
+                    drawerContentColor = colorScheme.secondary
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(1.dp)
-                            .background(colorScheme.outlineVariant)
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "Table of Contents",
+                        modifier = Modifier.padding(16.dp),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = colorScheme.secondary
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (progress.chapterLabel.isNotEmpty()) {
+                    HorizontalDivider(color = colorScheme.secondary.copy(alpha = 0.2f))
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        publication?.tableOfContents?.let { toc ->
+                            items(toc) { link ->
                                 Text(
-                                    text = progress.chapterLabel,
-                                    style = MaterialTheme.typography.labelSmall,
+                                    text = link.title ?: "Untitled",
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+                                            navigator?.go(link, animated = true)
+                                            scope.launch { drawerState.close() }
+                                            isInterfaceVisible = false
+                                        }
+                                        .padding(16.dp),
+                                    style = MaterialTheme.typography.bodyLarge,
                                     color = colorScheme.secondary
                                 )
-                                Text(
-                                    text = " • ",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = colorScheme.outline
+                            }
+                        }
+                    }
+                }
+            }
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(colorScheme.background)
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Navigator Container
+                    // FragmentContainerView for Readium Navigator
+                    AndroidViewBinding(
+                        factory = { inflater, parent, attachToParent ->
+                            val root = FrameLayout(inflater.context).apply {
+                                id = View.generateViewId()
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
                                 )
                             }
-                            Text(
-                                text = progress.pageLabel,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colorScheme.onSurface
-                            )
+                            containerId = root.id
+                            root
+                        },
+                        update = {
+                            // This will be called when showPublication is triggered from onViewCreated
+                        },
+                        modifier = Modifier.weight(1f).fillMaxWidth()
+                    )
+
+                    // Permanent Footer (Page/Chapter Info)
+                    val footerText = remember(progress) {
+                        if (progress.chapterLabel.isNotEmpty()) {
+                            "${progress.chapterLabel} • ${progress.pageLabel}"
+                        } else {
+                            progress.pageLabel
                         }
+                    }
+
+                    if (footerText.isNotEmpty()) {
                         Text(
-                            text = progress.percentageLabel,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = colorScheme.onSurface
+                            text = footerText,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .windowInsetsPadding(WindowInsets.navigationBars)
+                                .padding(vertical = 1.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colorScheme.onBackground.copy(alpha = 0.5f),
+                            textAlign = TextAlign.Center
                         )
                     }
-                    
-                    Spacer(modifier = Modifier.height(4.dp))
-                    
-                    LinearProgressIndicator(
-                        progress = { progress.value },
-                        modifier = Modifier.fillMaxWidth(),
-                        color = colorScheme.primary,
-                        trackColor = colorScheme.surfaceVariant,
-                    )
+                }
+
+                // Bottom Progress Bar
+                AnimatedVisibility(
+                    visible = isInterfaceVisible,
+                    enter = slideInVertically(initialOffsetY = { it }),
+                    exit = slideOutVertically(targetOffsetY = { it }),
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                ) {
+                    Surface(
+                        color = com.indeavour.coreader.ui.theme.Teal,
+                        tonalElevation = 2.dp,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .windowInsetsPadding(WindowInsets.navigationBars)
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(1.dp)
+                                    .background(colorScheme.secondary.copy(alpha = 0.2f))
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (progress.chapterLabel.isNotEmpty()) {
+                                        Text(
+                                            text = progress.chapterLabel,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = colorScheme.secondary
+                                        )
+                                        Text(
+                                            text = " • ",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = colorScheme.secondary.copy(alpha = 0.6f)
+                                        )
+                                    }
+                                    Text(
+                                        text = progress.pageLabel,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colorScheme.secondary
+                                    )
+                                }
+                                Text(
+                                    text = progress.percentageLabel,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colorScheme.secondary
+                                )
+                            }
+                            
+                            Spacer(modifier = Modifier.height(4.dp))
+                            
+                            LinearProgressIndicator(
+                                progress = { progress.value },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = colorScheme.secondary,
+                                trackColor = colorScheme.secondary.copy(alpha = 0.2f),
+                            )
+                        }
+                    }
+                }
+
+                // Top Bar
+                AnimatedVisibility(
+                    visible = isInterfaceVisible,
+                    enter = slideInVertically(initialOffsetY = { -it }),
+                    exit = slideOutVertically(targetOffsetY = { -it }),
+                    modifier = Modifier.align(Alignment.TopCenter)
+                ) {
+                    Surface(
+                        color = com.indeavour.coreader.ui.theme.Teal,
+                        tonalElevation = 2.dp,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .windowInsetsPadding(WindowInsets.statusBars)
+                                .height(56.dp)
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconButton(onClick = { 
+                                scope.launch { drawerState.open() }
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Default.Menu,
+                                    contentDescription = "Menu",
+                                    tint = colorScheme.secondary
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            publication?.metadata?.title?.let { title ->
+                                Text(
+                                    text = title,
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                        fontSize = 20.sp
+                                    ),
+                                    color = colorScheme.secondary,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -197,14 +329,15 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     @Composable
     private fun AndroidViewBinding(
         factory: (LayoutInflater, ViewGroup, Boolean) -> View,
-        update: (View) -> Unit
+        update: (View) -> Unit,
+        modifier: Modifier = Modifier
     ) {
         androidx.compose.ui.viewinterop.AndroidView(
             factory = { context ->
                 factory(LayoutInflater.from(context), FrameLayout(context), false)
             },
             update = update,
-            modifier = Modifier.fillMaxSize()
+            modifier = modifier
         )
     }
 
@@ -219,6 +352,8 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             }
         }
     }
+
+    private var onToggleInterface: (() -> Unit)? = null
 
     private fun showPublication(
         publication: Publication,
@@ -260,14 +395,14 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
         val transaction = childFragmentManager.beginTransaction()
             .replace(containerId, EpubNavigatorFragment::class.java, null, "navigator")
-        
+
         transaction.runOnCommit {
             colorScheme?.let { scheme ->
                 val navigatorView = childFragmentManager.findFragmentByTag("navigator")?.view
                 navigatorView?.setBackgroundColor(scheme.background.toArgb())
             }
         }
-        
+
         transaction.commit()
     }
 
@@ -285,7 +420,10 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                 navigator.goForward(animated = true)
                 true
             }
-            else -> false
+            else -> {
+                onToggleInterface?.invoke()
+                true
+            }
         }
     }
 
