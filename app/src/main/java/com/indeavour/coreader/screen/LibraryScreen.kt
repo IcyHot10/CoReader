@@ -46,11 +46,13 @@ import com.indeavour.coreader.ui.theme.Teal
 import kotlin.collections.mutableListOf
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material3.Button
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -79,6 +81,7 @@ import com.indeavour.coreader.AppRoomDatabase
 import com.indeavour.coreader.AppUtils
 import com.indeavour.coreader.R
 import com.indeavour.coreader.model.room.RoomBook
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.readium.adapter.pdfium.document.PdfiumDocumentFactory
 import org.readium.r2.shared.publication.Publication
@@ -93,6 +96,7 @@ import org.readium.r2.streamer.PublicationOpener
 import org.readium.r2.streamer.parser.DefaultPublicationParser
 import java.io.File
 import java.io.FileOutputStream
+import kotlin.coroutines.CoroutineContext
 
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -103,6 +107,16 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
 
     var books by remember {
         mutableStateOf(mutableListOf<MutableList<RoomBook>>())
+    }
+
+    var activeBook by remember {
+        mutableStateOf<RoomBook?>(null)
+    }
+
+    LaunchedEffect(Unit) {
+        database.bookDao().getActiveFlow().collect { book ->
+            activeBook = book
+        }
     }
 
 
@@ -159,6 +173,17 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
                 }
             }
         )
+    }, floatingActionButton = {
+        if (activeBook != null) {
+            FloatingActionButton(onClick = {
+                routeToBook()
+            }) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.MenuBook,
+                    contentDescription = "Open Active Book"
+                )
+            }
+        }
     }) {
         innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {

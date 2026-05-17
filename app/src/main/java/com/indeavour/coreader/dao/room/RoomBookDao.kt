@@ -20,11 +20,17 @@ interface RoomBookDao {
     @Query("SELECT * FROM book WHERE is_active = 1 LIMIT 1")
     suspend fun getActive(): RoomBook?
 
+    @Query("SELECT * FROM book WHERE is_active = 1 LIMIT 1")
+    fun getActiveFlow(): Flow<RoomBook?>
+
     @Query("UPDATE book SET is_active = 1 WHERE id = :id")
     suspend fun setActive(id: Int)
 
     @Query("UPDATE book SET is_active = 0")
     suspend fun setInActive()
+
+    @Query("UPDATE book SET current_page = :page WHERE is_active = 1")
+    suspend fun updateActiveBookProgress(page: Int)
 
     @Insert
     suspend fun insert(book: RoomBook)

@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.readium.r2.shared.publication.Publication
+import org.readium.r2.shared.publication.services.positions
 import java.io.File
 
 class ReaderViewModel(
@@ -22,6 +23,9 @@ class ReaderViewModel(
 
     private val _publication = MutableStateFlow<Publication?>(null)
     val publication: StateFlow<Publication?> = _publication
+
+    private val _initialLocator = MutableStateFlow<org.readium.r2.shared.publication.Locator?>(null)
+    val initialLocator: StateFlow<org.readium.r2.shared.publication.Locator?> = _initialLocator
 
     data class ReadingProgress(
         val value: Float = 0f,
@@ -53,6 +57,19 @@ class ReaderViewModel(
             percentageLabel = "${(progression * 100).toInt()}%",
             chapterLabel = chapterLabel
         )
+
+        // Update the initial locator so that if the fragment is recreated (e.g. theme change),
+        // it stays on the current page.
+        _initialLocator.value = locator
+
+        // Save global progress to database
+        // locator.locations.position is usually the 1-based index in the whole publication
+        val globalPageIndex = (locator.locations.position ?: 1) - 1
+        
+        viewModelScope.launch {
+            val database = AppRoomDatabase.getDatabase(getApplication())
+            database.bookDao().updateActiveBookProgress(globalPageIndex)
+        }
     }
 
     fun loadActiveBook() {
@@ -63,9 +80,9 @@ class ReaderViewModel(
             Log.d("ReaderViewModel", "Active book: $activeBook")
             if (activeBook != null) {
                 val bookFile = File(activeBook.filePath)
-                Log.d("ReaderViewModel", "Book file path: ${activeBook.filePath}, exists: ${bookFile.exists()}")
+                Log.d("ReaderViewModel", "Book file path: ${activeBook.filePath}, exists: ${bookFile.exists()}, page: ${activeBook.currentPage}")
                 if (bookFile.exists()) {
-                    openBook(bookFile)
+                    openBook(bookFile, activeBook.currentPage)
                 } else {
                     _error.value = "Book file not found at ${activeBook.filePath}"
                 }
@@ -75,13 +92,23 @@ class ReaderViewModel(
         }
     }
 
-    private fun openBook(file: File) {
-        Log.d("ReaderViewModel", "openBook: ${file.absolutePath}")
+    private fun openBook(file: File, initialPageIndex: Int = 0) {
+        Log.d("ReaderViewModel", "openBook: ${file.absolutePath} at page $initialPageIndex")
         viewModelScope.launch {
             repository.openBook(file)
-                .onSuccess {
-                    Log.d("ReaderViewModel", "Book opened successfully: ${it.metadata.title}")
-                    _publication.value = it
+                .onSuccess { pub ->
+                    Log.d("ReaderViewModel", "Book opened successfully: ${pub.metadata.title}")
+                    
+                    // Convert pageIndex to a Locator
+                    val positions = pub.positions()
+                    val locator = if (initialPageIndex in positions.indices) {
+                        positions[initialPageIndex]
+                    } else {
+                        null
+                    }
+                    
+                    _initialLocator.value = locator
+                    _publication.value = pub
                 }.onFailure {
                     Log.e("ReaderViewModel", "Failed to open book", it)
                     _error.value = it.message

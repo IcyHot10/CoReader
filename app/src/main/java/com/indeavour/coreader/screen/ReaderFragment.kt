@@ -119,10 +119,9 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         
         // Update Readium configuration when theme changes
         LaunchedEffect(colorScheme, publication, isContainerReady) {
-            if (isContainerReady) {
-                publication?.let {
-                    showPublication(it, colorScheme)
-                }
+            if (isContainerReady && publication != null) {
+                // Use the latest initialLocator from the ViewModel to avoid race conditions
+                showPublication(publication!!, colorScheme, viewModel.initialLocator.value)
             }
         }
         
@@ -366,7 +365,8 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
     private fun showPublication(
         publication: Publication,
-        colorScheme: androidx.compose.material3.ColorScheme? = null
+        colorScheme: androidx.compose.material3.ColorScheme? = null,
+        initialLocator: org.readium.r2.shared.publication.Locator? = null
     ) {
         val container = view?.findViewById<View>(R.id.reader_container)
         if (container == null) return
@@ -394,7 +394,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         }
 
         val factory = EpubNavigatorFactory(publication).createFragmentFactory(
-            initialLocator = null,
+            initialLocator = initialLocator,
             initialPreferences = initialPreferences,
             listener = this,
             paginationListener = this,
