@@ -41,8 +41,8 @@ class AuthViewModel : ViewModel() {
         auth.createUserWithEmailAndPassword(email, password).addOnCompleteListener {
             if(it.isSuccessful) {
                 val userId = it.result?.user?.uid
-                val userModel = UserModel(userId!!, email, email)
-                firestore.collection("users").document(userId).set(userModel).addOnCompleteListener { dbTask ->
+                val userModel = UserModel(email, email)
+                firestore.collection("users").document(userId!!).set(userModel).addOnCompleteListener { dbTask ->
                     if(dbTask.isSuccessful){
                         onResult(true, "Signup Successful")
                     } else {
@@ -80,11 +80,10 @@ class AuthViewModel : ViewModel() {
                             if(it.result?.additionalUserInfo?.isNewUser?:false) {
                                 val userId = it.result?.user?.uid
                                 val userModel = UserModel(
-                                    userId!!,
                                     it.result.user!!.email!!,
                                     it.result.user!!.email!!
                                 )
-                                firestore.collection("users").document(userId).set(userModel)
+                                firestore.collection("users").document(userId!!).set(userModel)
                                     .addOnCompleteListener { dbTask ->
                                         if (dbTask.isSuccessful) {
                                             onResult(true, "Signup Successful")

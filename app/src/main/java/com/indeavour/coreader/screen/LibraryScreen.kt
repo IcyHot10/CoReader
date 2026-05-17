@@ -1,5 +1,6 @@
 package com.indeavour.coreader.screen
 
+import android.app.Activity
 import android.content.ContentValues.TAG
 import android.content.Context
 import android.graphics.BitmapFactory
@@ -364,7 +365,7 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
             }
 
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = { }) {
+                IconButton(onClick = { (context as? Activity)?.finishAndRemoveTask() }) {
                     Icon(
                         imageVector = Icons.Filled.PowerSettingsNew,
                         contentDescription = "Exit",
