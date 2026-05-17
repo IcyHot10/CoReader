@@ -26,19 +26,30 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
 import androidx.compose.material3.TopAppBarDefaults
+import com.indeavour.coreader.model.firebase.UserModel
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.indeavour.coreader.viewmodel.UserViewModel
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -66,6 +77,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toFile
 import androidx.credentials.ClearCredentialStateRequest
@@ -104,6 +116,10 @@ import kotlin.coroutines.CoroutineContext
 fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
     val context = LocalContext.current
     val database by lazy { AppRoomDatabase.getDatabase(context = context) }
+    val scope = rememberCoroutineScope()
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val userViewModel: UserViewModel = viewModel()
+    val user by userViewModel.user.collectAsState()
 
     var books by remember {
         mutableStateOf(mutableListOf<MutableList<RoomBook>>())
@@ -138,10 +154,6 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
         }
     }
 
-    var displaySideMenu by rememberSaveable {
-        mutableStateOf(false)
-    }
-
     var displayMoreMenu by rememberSaveable {
         mutableStateOf(false)
     }
@@ -150,64 +162,79 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
         displayMoreMenu = !displayMoreMenu
     }
 
-    Scaffold(topBar = {
-        TopAppBar(
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = Teal,
-                titleContentColor = MaterialTheme.colorScheme.secondary),
-            title = { Text("CoReader Library") },
-            navigationIcon = {
-                IconButton(onClick = { displaySideMenu = !displaySideMenu }) {
-                    Icon(
-                        imageVector = Icons.Filled.Menu,
-                        contentDescription = "Open Burger Menu"
-                    )
-                }
-            },
-            actions = {
-                IconButton(onClick = { displayMoreMenu = !displayMoreMenu }) {
-                    Icon(
-                        imageVector = Icons.Filled.MoreVert,
-                        contentDescription = "Open More"
-                    )
-                }
-            }
-        )
-    }, floatingActionButton = {
-        if (activeBook != null) {
-            FloatingActionButton(onClick = {
-                routeToBook()
-            }) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.MenuBook,
-                    contentDescription = "Open Active Book"
-                )
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet(
+                modifier = Modifier.width(325.dp),
+                drawerContainerColor = MaterialTheme.colorScheme.primaryContainer
+            ) {
+                SideMenuContent(user, userViewModel, routeToLogin)
             }
         }
-    }) {
-        innerPadding ->
-        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            Column(modifier = Modifier.fillMaxSize().align(Alignment.TopCenter).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.Top) {
-                for (row in books){
-                    Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        for (book in row){
-                            Spacer(modifier = Modifier.width(4.dp))
-                            BookCard(book, routeToBook, Modifier.weight(1f), context)
-                            Spacer(modifier = Modifier.width(4.dp))
+    ) {
+        Scaffold(topBar = {
+            TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Teal,
+                    titleContentColor = MaterialTheme.colorScheme.secondary),
+                title = { Text("CoReader Library") },
+                navigationIcon = {
+                    IconButton(onClick = { 
+                        scope.launch {
+                            if (drawerState.isClosed) drawerState.open() else drawerState.close()
                         }
-                        if (row.size < 3){
-                            for (i in 0 until 3 - row.size) {
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Spacer(modifier = Modifier.weight(1f))
-                                Spacer(modifier = Modifier.width(4.dp))
-                            }
-                        }
+                    }) {
+                        Icon(
+                            imageVector = Icons.Filled.Menu,
+                            contentDescription = "Open Burger Menu"
+                        )
                     }
-                    HorizontalDivider(thickness = 10.dp, color = Teal)
+                },
+                actions = {
+                    IconButton(onClick = { displayMoreMenu = !displayMoreMenu }) {
+                        Icon(
+                            imageVector = Icons.Filled.MoreVert,
+                            contentDescription = "Open More"
+                        )
+                    }
+                }
+            )
+        }, floatingActionButton = {
+            if (activeBook != null && drawerState.isClosed) {
+                FloatingActionButton(onClick = {
+                    routeToBook()
+                }) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.MenuBook,
+                        contentDescription = "Open Active Book"
+                    )
                 }
             }
-            if (displaySideMenu) SideMenu(Modifier.width(325.dp), routeToLogin)
-            if (displayMoreMenu) MoreMenu(Modifier.width(200.dp).height(150.dp).align(Alignment.TopEnd), toggleMoreMenu)
+        }) {
+            innerPadding ->
+            Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+                Column(modifier = Modifier.fillMaxSize().align(Alignment.TopCenter).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.Top) {
+                    for (row in books){
+                        Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            for (book in row){
+                                Spacer(modifier = Modifier.width(4.dp))
+                                BookCard(book, routeToBook, Modifier.weight(1f), context)
+                                Spacer(modifier = Modifier.width(4.dp))
+                            }
+                            if (row.size < 3){
+                                for (i in 0 until 3 - row.size) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Spacer(modifier = Modifier.weight(1f))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                }
+                            }
+                        }
+                        HorizontalDivider(thickness = 10.dp, color = Teal)
+                    }
+                }
+                if (displayMoreMenu) MoreMenu(Modifier.width(200.dp).height(150.dp).align(Alignment.TopEnd), toggleMoreMenu)
+            }
         }
     }
 }
@@ -236,13 +263,49 @@ fun BookCard(book: RoomBook, routeToBook: () -> Unit, modifier: Modifier = Modif
 }
 
 @Composable
-fun SideMenu(modifier: Modifier, routeToLogin: () -> Unit){
+fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin: () -> Unit){
     val auth = FirebaseAuth.getInstance()
     val context = LocalContext.current
-    Column(modifier = modifier.fillMaxSize().background(color = MaterialTheme.colorScheme.primaryContainer), verticalArrangement = Arrangement.SpaceBetween) {
+    var showEditDialog by remember { mutableStateOf(false) }
+    var newUsername by remember { mutableStateOf("") }
+
+    if (showEditDialog) {
+        AlertDialog(
+            onDismissRequest = { showEditDialog = false },
+            title = { Text("Update Username") },
+            text = {
+                TextField(
+                    value = newUsername,
+                    onValueChange = { newUsername = it },
+                    label = { Text("New Username") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    userViewModel.updateUsername(newUsername) { success ->
+                        if (success) {
+                            showEditDialog = false
+                        } else {
+                            AppUtils.showToast(context, "Failed to update username")
+                        }
+                    }
+                }) {
+                    Text("Update")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
         Column() {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()){
-                Row(verticalAlignment = Alignment.CenterVertically){
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)){
                     IconButton(onClick = {  }, modifier = Modifier.clip(CircleShape)) {
                         Image(
                             painter = painterResource(R.drawable.logo),
@@ -252,9 +315,18 @@ fun SideMenu(modifier: Modifier, routeToLogin: () -> Unit){
                         )
                     }
                     Spacer(Modifier.width(10.dp))
-                    Text("Username", fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurface)
+                    Text(
+                        user?.username ?: "Loading...",
+                        fontSize = 18.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
-                IconButton(onClick = { }) {
+                IconButton(onClick = { 
+                    newUsername = user?.username ?: ""
+                    showEditDialog = true 
+                }) {
                     Icon(
                         imageVector = Icons.Filled.Edit,
                         contentDescription = "Edit profile",

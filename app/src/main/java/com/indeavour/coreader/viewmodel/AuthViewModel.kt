@@ -12,7 +12,7 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Co
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.FirebaseFirestore
-import com.indeavour.coreader.model.UserModel
+import com.indeavour.coreader.model.firebase.UserModel
 import com.indeavour.coreader.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,7 +41,7 @@ class AuthViewModel : ViewModel() {
         auth.createUserWithEmailAndPassword(email, password).addOnCompleteListener {
             if(it.isSuccessful) {
                 val userId = it.result?.user?.uid
-                val userModel = UserModel(userId!!, email, email, null)
+                val userModel = UserModel(userId!!, email, email)
                 firestore.collection("users").document(userId).set(userModel).addOnCompleteListener { dbTask ->
                     if(dbTask.isSuccessful){
                         onResult(true, "Signup Successful")
@@ -82,8 +82,7 @@ class AuthViewModel : ViewModel() {
                                 val userModel = UserModel(
                                     userId!!,
                                     it.result.user!!.email!!,
-                                    it.result.user!!.email!!,
-                                    null
+                                    it.result.user!!.email!!
                                 )
                                 firestore.collection("users").document(userId).set(userModel)
                                     .addOnCompleteListener { dbTask ->
