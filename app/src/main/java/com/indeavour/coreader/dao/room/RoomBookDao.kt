@@ -29,8 +29,8 @@ interface RoomBookDao {
     @Query("UPDATE book SET is_active = 0")
     suspend fun setInActive()
 
-    @Query("UPDATE book SET current_page = :page WHERE is_active = 1")
-    suspend fun updateActiveBookProgress(page: Int)
+    @Query("UPDATE book SET progression = :progression WHERE is_active = 1")
+    suspend fun updateActiveBookProgression(progression: String)
 
     @Insert
     suspend fun insert(book: RoomBook)

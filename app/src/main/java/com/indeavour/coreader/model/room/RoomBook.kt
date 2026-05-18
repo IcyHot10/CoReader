@@ -14,6 +14,6 @@ data class RoomBook(
     @ColumnInfo(name = "file_path") val filePath: String,
     @ColumnInfo(name = "is_favourite") val isFavourite: Boolean,
     @ColumnInfo(name = "uri") val uri: String,
-    @ColumnInfo(name = "current_page") val currentPage: Int = 0,
+    @ColumnInfo(name = "progression") val progression: String? = null,
     @ColumnInfo(name = "is_active") val isActive: Boolean = false
 )

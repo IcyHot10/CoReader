@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
@@ -56,6 +57,8 @@ import org.readium.r2.shared.util.AbsoluteUrl
 class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener, EpubNavigatorFragment.PaginationListener {
 
     private lateinit var viewModel: ReaderViewModel
+
+    private var currentPreferences: EpubPreferences? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Set a fallback factory to prevent InstantiationException during restoration
@@ -110,6 +113,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     private fun ReaderScreen() {
         val publication by viewModel.publication.collectAsState()
         val progress by viewModel.progress.collectAsState()
+        val isBookReady by viewModel.isBookReady.collectAsState()
         var isInterfaceVisible by remember { mutableStateOf(false) }
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
@@ -117,11 +121,37 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
         val colorScheme = MaterialTheme.colorScheme
         
-        // Update Readium configuration when theme changes
-        LaunchedEffect(colorScheme, publication, isContainerReady) {
+        // Update Readium configuration when publication changes, but only if navigator is missing
+        LaunchedEffect(publication, isContainerReady) {
             if (isContainerReady && publication != null) {
-                // Use the latest initialLocator from the ViewModel to avoid race conditions
-                showPublication(publication!!, colorScheme, viewModel.initialLocator.value)
+                val currentNavigator = childFragmentManager.findFragmentByTag("navigator")
+                if (currentNavigator == null) {
+                    showPublication(publication!!, colorScheme, viewModel.initialLocator.value)
+                }
+            }
+        }
+        
+        // Handle theme changes separately to avoid recreating the navigator
+        LaunchedEffect(colorScheme) {
+            val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+            if (navigator != null && colorScheme != null) {
+                val theme = if (colorScheme.background.toArgb() == Color.BLACK || 
+                    colorScheme.background.toArgb() < 0xFF444444.toInt()) {
+                    Theme.DARK
+                } else {
+                    Theme.LIGHT
+                }
+                
+                val preferences = EpubPreferences(
+                    theme = theme,
+                    backgroundColor = PreferenceColor(colorScheme.background.toArgb()),
+                    textColor = PreferenceColor(colorScheme.onBackground.toArgb())
+                )
+                currentPreferences = preferences
+                navigator.submitPreferences(preferences)
+                
+                // Update background of the container view as well
+                view?.findViewById<View>(R.id.reader_container)?.setBackgroundColor(colorScheme.background.toArgb())
             }
         }
         
@@ -134,7 +164,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
         ModalNavigationDrawer(
             drawerState = drawerState,
-            gesturesEnabled = drawerState.isOpen,
+            gesturesEnabled = drawerState.isOpen && isBookReady,
             drawerContent = {
                 ModalDrawerSheet(
                     modifier = Modifier.fillMaxWidth(0.8f),
@@ -177,156 +207,175 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     .fillMaxSize()
                     .background(colorScheme.background)
             ) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // Navigator Container
-                    AndroidViewBinding(
-                        factory = { inflater, parent, attachToParent ->
-                            FrameLayout(inflater.context).apply {
-                                id = R.id.reader_container
-                                layoutParams = ViewGroup.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT,
-                                    ViewGroup.LayoutParams.MATCH_PARENT
-                                )
-                                post { isContainerReady = true }
-                            }
-                        },
-                        update = { },
-                        modifier = Modifier.weight(1f).fillMaxWidth()
-                    )
-
-                    // Permanent Footer (Page/Chapter Info)
-                    val footerText = remember(progress) {
-                        if (progress.chapterLabel.isNotEmpty()) {
-                            "${progress.chapterLabel} • ${progress.pageLabel}"
-                        } else {
-                            progress.pageLabel
-                        }
-                    }
-
-                    if (footerText.isNotEmpty()) {
-                        Text(
-                            text = footerText,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .windowInsetsPadding(WindowInsets.navigationBars)
-                                .padding(vertical = 1.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colorScheme.onBackground.copy(alpha = 0.5f),
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
-
-                // Bottom Progress Bar
-                AnimatedVisibility(
-                    visible = isInterfaceVisible,
-                    enter = slideInVertically(initialOffsetY = { it }),
-                    exit = slideOutVertically(targetOffsetY = { it }),
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                ) {
-                    Surface(
-                        color = Teal,
-                        tonalElevation = 2.dp,
-                        modifier = Modifier.fillMaxWidth()
+                // We keep the main content structure but wrap it in an alpha/visibility layer
+                // so that the background remains "blank" (showing only the Box background)
+                // until isBookReady is true.
+                
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .alpha(if (isBookReady) 1f else 0f)
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .windowInsetsPadding(WindowInsets.navigationBars)
-                                .padding(horizontal = 16.dp, vertical = 8.dp)
-                        ) {
-                            Box(
+                        // Navigator Container
+                        AndroidViewBinding(
+                            factory = { inflater, parent, attachToParent ->
+                                FrameLayout(inflater.context).apply {
+                                    id = R.id.reader_container
+                                    layoutParams = ViewGroup.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT
+                                    )
+                                    post { isContainerReady = true }
+                                }
+                            },
+                            update = { },
+                            modifier = Modifier.weight(1f).fillMaxWidth()
+                        )
+
+                        // Permanent Footer (Page/Chapter Info)
+                        val footerText = remember(progress) {
+                            if (progress.chapterLabel.isNotEmpty()) {
+                                "${progress.chapterLabel} • ${progress.pageLabel}"
+                            } else {
+                                progress.pageLabel
+                            }
+                        }
+
+                        if (footerText.isNotEmpty()) {
+                            Text(
+                                text = footerText,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(1.dp)
-                                    .background(colorScheme.secondary.copy(alpha = 0.2f))
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (progress.chapterLabel.isNotEmpty()) {
-                                        Text(
-                                            text = progress.chapterLabel,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = colorScheme.secondary
-                                        )
-                                        Text(
-                                            text = " • ",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = colorScheme.secondary.copy(alpha = 0.6f)
-                                        )
-                                    }
-                                    Text(
-                                        text = progress.pageLabel,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = colorScheme.secondary
-                                    )
-                                }
-                                Text(
-                                    text = progress.percentageLabel,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = colorScheme.secondary
-                                )
-                            }
-                            
-                            Spacer(modifier = Modifier.height(4.dp))
-                            
-                            LinearProgressIndicator(
-                                progress = { progress.value },
-                                modifier = Modifier.fillMaxWidth(),
-                                color = colorScheme.secondary,
-                                trackColor = colorScheme.secondary.copy(alpha = 0.2f),
+                                    .windowInsetsPadding(WindowInsets.navigationBars)
+                                    .padding(vertical = 1.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colorScheme.onBackground.copy(alpha = 0.5f),
+                                textAlign = TextAlign.Center
                             )
                         }
                     }
-                }
 
-                // Top Bar
-                AnimatedVisibility(
-                    visible = isInterfaceVisible,
-                    enter = slideInVertically(initialOffsetY = { -it }),
-                    exit = slideOutVertically(targetOffsetY = { -it }),
-                    modifier = Modifier.align(Alignment.TopCenter)
-                ) {
-                    Surface(
-                        color = Teal,
-                        tonalElevation = 2.dp,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .windowInsetsPadding(WindowInsets.statusBars)
-                                .height(56.dp)
-                                .fillMaxWidth()
-                                .padding(horizontal = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                    // UI Overlays (Top/Bottom bars) - also hidden until ready
+                    if (isBookReady) {
+                        // Bottom Progress Bar
+                        AnimatedVisibility(
+                            visible = isInterfaceVisible,
+                            enter = slideInVertically(initialOffsetY = { it }),
+                            exit = slideOutVertically(targetOffsetY = { it }),
+                            modifier = Modifier.align(Alignment.BottomCenter)
                         ) {
-                            IconButton(onClick = { 
-                                scope.launch { drawerState.open() }
-                            }) {
-                                Icon(
-                                    imageVector = Icons.Default.Menu,
-                                    contentDescription = "Menu",
-                                    tint = colorScheme.secondary
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            publication?.metadata?.title?.let { title ->
-                                Text(
-                                    text = title,
-                                    style = MaterialTheme.typography.titleLarge.copy(
-                                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                                        fontSize = 20.sp
-                                    ),
-                                    color = colorScheme.secondary,
-                                    maxLines = 1
-                                )
+                            Surface(
+                                color = Teal,
+                                tonalElevation = 2.dp,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .windowInsetsPadding(WindowInsets.navigationBars)
+                                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(1.dp)
+                                            .background(colorScheme.secondary.copy(alpha = 0.2f))
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (progress.chapterLabel.isNotEmpty()) {
+                                                Text(
+                                                    text = progress.chapterLabel,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = colorScheme.secondary
+                                                )
+                                                Text(
+                                                    text = " • ",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = colorScheme.secondary.copy(alpha = 0.6f)
+                                                )
+                                            }
+                                            Text(
+                                                text = progress.pageLabel,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = colorScheme.secondary
+                                            )
+                                        }
+                                        Text(
+                                            text = progress.percentageLabel,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = colorScheme.secondary
+                                        )
+                                    }
+                                    
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    
+                                    LinearProgressIndicator(
+                                        progress = { progress.value },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = colorScheme.secondary,
+                                        trackColor = colorScheme.secondary.copy(alpha = 0.2f),
+                                    )
+                                }
                             }
                         }
+
+                        // Top Bar
+                        AnimatedVisibility(
+                            visible = isInterfaceVisible,
+                            enter = slideInVertically(initialOffsetY = { -it }),
+                            exit = slideOutVertically(targetOffsetY = { -it }),
+                            modifier = Modifier.align(Alignment.TopCenter)
+                        ) {
+                            Surface(
+                                color = Teal,
+                                tonalElevation = 2.dp,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .windowInsetsPadding(WindowInsets.statusBars)
+                                        .height(56.dp)
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    IconButton(onClick = { 
+                                        scope.launch { drawerState.open() }
+                                    }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Menu,
+                                            contentDescription = "Menu",
+                                            tint = colorScheme.secondary
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    publication?.metadata?.title?.let { title ->
+                                        Text(
+                                            text = title,
+                                            style = MaterialTheme.typography.titleLarge.copy(
+                                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                                fontSize = 20.sp
+                                            ),
+                                            color = colorScheme.secondary,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Optional: Show a loading indicator in the center of the blank background
+                        CircularProgressIndicator(
+                            modifier = Modifier.align(Alignment.Center),
+                            color = colorScheme.secondary
+                        )
                     }
                 }
             }
@@ -368,6 +417,8 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         colorScheme: androidx.compose.material3.ColorScheme? = null,
         initialLocator: org.readium.r2.shared.publication.Locator? = null
     ) {
+        viewModel.setBookReady(false)
+        hasInitialRecalculationDone = false
         val container = view?.findViewById<View>(R.id.reader_container)
         if (container == null) return
 
@@ -383,6 +434,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             backgroundColor = colorScheme?.let { PreferenceColor(it.background.toArgb()) },
             textColor = colorScheme?.let { PreferenceColor(it.onBackground.toArgb()) }
         )
+        currentPreferences = initialPreferences
 
         val config = EpubNavigatorFragment.Configuration().apply {
             colorScheme?.let { scheme ->
@@ -417,6 +469,10 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     }
 
     override fun onTap(event: TapEvent): Boolean {
+        // Only process taps if the fragment is at least STARTED to avoid processing clicks 
+        // intended for other screens (like the Library) when this fragment is in the backstack.
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return false
+
         val point = event.point
         val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment ?: return false
         val width = view?.width ?: return false
@@ -439,6 +495,40 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
     override fun onPageChanged(pageIndex: Int, totalPages: Int, locator: Locator) {
         viewModel.updateProgress(pageIndex, totalPages, locator)
+    }
+
+    private var hasInitialRecalculationDone = false
+
+    override fun onPageLoaded() {
+        super.onPageLoaded()
+        
+        // Only run this once per "open" to avoid infinite loops during page turns
+        if (hasInitialRecalculationDone) return
+        
+        val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+        val preferences = currentPreferences
+        if (navigator != null && preferences != null) {
+            navigator.lifecycleScope.launch {
+                // Wait for the WebView to be fully interactive
+                kotlinx.coroutines.delay(200)
+                
+                Log.d("ReaderFragment", "Forcing initial pagination recalculation via jump-refresh")
+                
+                // 1. Get current position
+                val currentLocator = navigator.currentLocator.value
+                
+                // 2. Force a jump to the exact same position. 
+                // In Readium, a 'go' call to the current locator forces a re-sync of the 
+                // internal navigator state and often triggers a fresh pagination report.
+                navigator.go(currentLocator, animated = false)
+                
+                // 3. Re-submit preferences to trigger a layout pass
+                navigator.submitPreferences(preferences)
+                
+                hasInitialRecalculationDone = true
+                viewModel.setBookReady(true)
+            }
+        }
     }
 
     override fun onExternalLinkActivated(url: AbsoluteUrl) {

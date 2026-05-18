@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.readium.r2.shared.publication.Publication
-import org.readium.r2.shared.publication.services.positions
 import java.io.File
 
 class ReaderViewModel(
@@ -37,8 +36,15 @@ class ReaderViewModel(
     private val _progress = MutableStateFlow(ReadingProgress())
     val progress: StateFlow<ReadingProgress> = _progress
 
+    private val _isBookReady = MutableStateFlow(false)
+    val isBookReady: StateFlow<Boolean> = _isBookReady
+
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
+
+    fun setBookReady(ready: Boolean) {
+        _isBookReady.value = ready
+    }
 
     fun updateProgress(pageIndex: Int, totalPages: Int, locator: org.readium.r2.shared.publication.Locator) {
         val pub = _publication.value
@@ -63,16 +69,17 @@ class ReaderViewModel(
         _initialLocator.value = locator
 
         // Save global progress to database
-        // locator.locations.position is usually the 1-based index in the whole publication
-        val globalPageIndex = (locator.locations.position ?: 1) - 1
-        
         viewModelScope.launch {
             val database = AppRoomDatabase.getDatabase(getApplication())
-            database.bookDao().updateActiveBookProgress(globalPageIndex)
+            database.bookDao().updateActiveBookProgression(locator.toJSON().toString())
         }
     }
 
     fun loadActiveBook() {
+        if (_publication.value != null) {
+            Log.d("ReaderViewModel", "Book already loaded, skipping loadActiveBook")
+            return
+        }
         Log.d("ReaderViewModel", "loadActiveBook called")
         viewModelScope.launch {
             val database = AppRoomDatabase.getDatabase(getApplication())
@@ -80,9 +87,9 @@ class ReaderViewModel(
             Log.d("ReaderViewModel", "Active book: $activeBook")
             if (activeBook != null) {
                 val bookFile = File(activeBook.filePath)
-                Log.d("ReaderViewModel", "Book file path: ${activeBook.filePath}, exists: ${bookFile.exists()}, page: ${activeBook.currentPage}")
+                Log.d("ReaderViewModel", "Book file path: ${activeBook.filePath}, exists: ${bookFile.exists()}")
                 if (bookFile.exists()) {
-                    openBook(bookFile, activeBook.currentPage)
+                    openBook(bookFile, progression = activeBook.progression)
                 } else {
                     _error.value = "Book file not found at ${activeBook.filePath}"
                 }
@@ -92,17 +99,21 @@ class ReaderViewModel(
         }
     }
 
-    private fun openBook(file: File, initialPageIndex: Int = 0) {
-        Log.d("ReaderViewModel", "openBook: ${file.absolutePath} at page $initialPageIndex")
+    private fun openBook(file: File, progression: String? = null) {
+        Log.d("ReaderViewModel", "openBook: ${file.absolutePath}, progression: $progression")
+        _isBookReady.value = false
         viewModelScope.launch {
             repository.openBook(file)
                 .onSuccess { pub ->
                     Log.d("ReaderViewModel", "Book opened successfully: ${pub.metadata.title}")
                     
-                    // Convert pageIndex to a Locator
-                    val positions = pub.positions()
-                    val locator = if (initialPageIndex in positions.indices) {
-                        positions[initialPageIndex]
+                    val locator = if (progression != null) {
+                        try {
+                            org.readium.r2.shared.publication.Locator.fromJSON(org.json.JSONObject(progression))
+                        } catch (e: Exception) {
+                            Log.e("ReaderViewModel", "Failed to parse initial progression JSON", e)
+                            null
+                        }
                     } else {
                         null
                     }

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -39,6 +40,19 @@ fun BookScreen(routeToLibrary: () -> Unit) {
     }
 
     Log.d("BookScreen", "publication: $publication, error: $error")
+
+    DisposableEffect(Unit) {
+        onDispose {
+            // Clean up the fragment when the screen is disposed (navigated away)
+            val fragment = activity?.supportFragmentManager?.findFragmentById(com.indeavour.coreader.R.id.book_container)
+            if (fragment != null) {
+                activity.supportFragmentManager.beginTransaction()
+                    .remove(fragment)
+                    .commitAllowingStateLoss()
+                Log.d("BookScreen", "ReaderFragment removed on disposal")
+            }
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         if (publication != null) {
