@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.clickable
-import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
@@ -215,7 +214,6 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .alpha(if (isBookReady) 1f else 0f)
                     ) {
                         // Navigator Container
                         AndroidViewBinding(
@@ -242,7 +240,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                             }
                         }
 
-                        if (footerText.isNotEmpty()) {
+                        if (isBookReady && footerText.isNotEmpty()) {
                             Text(
                                 text = footerText,
                                 modifier = Modifier
@@ -370,12 +368,6 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                 }
                             }
                         }
-                    } else {
-                        // Optional: Show a loading indicator in the center of the blank background
-                        CircularProgressIndicator(
-                            modifier = Modifier.align(Alignment.Center),
-                            color = colorScheme.secondary
-                        )
                     }
                 }
             }
@@ -417,7 +409,9 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         colorScheme: androidx.compose.material3.ColorScheme? = null,
         initialLocator: org.readium.r2.shared.publication.Locator? = null
     ) {
-        viewModel.setBookReady(false)
+        if (!viewModel.hasEverLoaded) {
+            viewModel.setBookReady(false)
+        }
         hasInitialRecalculationDone = false
         val container = view?.findViewById<View>(R.id.reader_container)
         if (container == null) return

@@ -39,11 +39,17 @@ class ReaderViewModel(
     private val _isBookReady = MutableStateFlow(false)
     val isBookReady: StateFlow<Boolean> = _isBookReady
 
+    var hasEverLoaded = false
+        private set
+
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
     fun setBookReady(ready: Boolean) {
         _isBookReady.value = ready
+        if (ready) {
+            hasEverLoaded = true
+        }
     }
 
     fun updateProgress(pageIndex: Int, totalPages: Int, locator: org.readium.r2.shared.publication.Locator) {
@@ -101,7 +107,9 @@ class ReaderViewModel(
 
     private fun openBook(file: File, progression: String? = null) {
         Log.d("ReaderViewModel", "openBook: ${file.absolutePath}, progression: $progression")
-        _isBookReady.value = false
+        if (!hasEverLoaded) {
+            _isBookReady.value = false
+        }
         viewModelScope.launch {
             repository.openBook(file)
                 .onSuccess { pub ->
