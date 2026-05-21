@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
@@ -203,14 +204,11 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     .fillMaxSize()
                     .background(colorScheme.background)
             ) {
-                // We keep the main content structure but wrap it in an alpha/visibility layer
-                // so that the background remains "blank" (showing only the Box background)
-                // until isBookReady is true.
-                
                 Box(modifier = Modifier.fillMaxSize()) {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
+                            .alpha(if (isBookReady) 1f else 0f)
                     ) {
                         // Navigator Container
                         AndroidViewBinding(
@@ -251,7 +249,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                         }
                     }
 
-                    // UI Overlays (Top/Bottom bars) - also hidden until ready
+                    // UI Overlays (Top/Bottom bars)
                     if (isBookReady) {
                         // Bottom Progress Bar
                         AnimatedVisibility(
@@ -363,6 +361,29 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                         )
                                     }
                                 }
+                            }
+                        }
+                    }
+
+                    // Loading Screen Overlay
+                    if (!isBookReady) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(colorScheme.background),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(
+                                    color = Teal,
+                                    strokeWidth = 4.dp
+                                )
+                                Spacer(modifier = Modifier.height(24.dp))
+                                Text(
+                                    text = "Preparing your book...",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = colorScheme.onBackground.copy(alpha = 0.7f)
+                                )
                             }
                         }
                     }
@@ -486,12 +507,16 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
     override fun onPageChanged(pageIndex: Int, totalPages: Int, locator: Locator) {
         viewModel.updateProgress(pageIndex, totalPages, locator)
-        
-        // Safety fallback: If we have meaningful pagination information, the book is definitely "ready"
-        // even if onPageLoaded hasn't finished its jump-refresh yet.
-        if (totalPages > 1 && !viewModel.isBookReady.value) {
-            Log.d("ReaderFragment", "Setting book ready via onPageChanged fallback (totalPages: $totalPages)")
-            viewModel.setBookReady(true)
+
+        // Only hide the loading screen if we aren't ready yet.
+        // We no longer wait for totalPages > 1 specifically here,
+        // but we keep the delay to ensure the UI has updated its display.
+        if (!viewModel.isBookReady.value) {
+            viewLifecycleOwner.lifecycleScope.launch {
+                kotlinx.coroutines.delay(200)
+                Log.d("ReaderFragment", "onPageChanged: Revealing book")
+                viewModel.setBookReady(true)
+            }
         }
     }
 
@@ -513,22 +538,19 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                 try {
                     // Wait for the WebView to be fully interactive
                     kotlinx.coroutines.delay(500)
-                    
+
                     Log.d("ReaderFragment", "Forcing initial pagination recalculation via jump-refresh")
                     
                     // 1. Get current position
                     val currentLocator = navigator.currentLocator.value
                     
-                    // 2. Force a jump to the exact same position. 
+                    // 2. Force a jump to the exact same position.
                     navigator.go(currentLocator, animated = false)
-                    
+
                     // 3. Re-submit preferences to trigger a layout pass
                     navigator.submitPreferences(preferences)
                     
                     hasInitialRecalculationDone = true
-                    // Small delay to let the navigator process the jump before showing the UI
-                    kotlinx.coroutines.delay(200)
-                    viewModel.setBookReady(true)
                 } catch (e: Exception) {
                     Log.e("ReaderFragment", "Error during initial pagination refresh", e)
                     hasInitialRecalculationDone = true
