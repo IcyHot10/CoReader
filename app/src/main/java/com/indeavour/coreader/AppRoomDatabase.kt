@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import com.indeavour.coreader.dao.room.RoomBookDao
 import com.indeavour.coreader.model.room.RoomBook
 
-@Database(entities = [RoomBook::class], version = 4, exportSchema = false)
+@Database(entities = [RoomBook::class], version = 5, exportSchema = false)
 abstract class AppRoomDatabase: RoomDatabase() {
     abstract fun bookDao(): RoomBookDao
 

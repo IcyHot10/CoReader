@@ -123,10 +123,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         // Update Readium configuration when publication changes, but only if navigator is missing
         LaunchedEffect(publication, isContainerReady) {
             if (isContainerReady && publication != null) {
-                val currentNavigator = childFragmentManager.findFragmentByTag("navigator")
-                if (currentNavigator == null) {
-                    showPublication(publication!!, colorScheme, viewModel.initialLocator.value)
-                }
+                showPublication(publication!!, colorScheme, viewModel.initialLocator.value)
             }
         }
         
@@ -489,6 +486,13 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
     override fun onPageChanged(pageIndex: Int, totalPages: Int, locator: Locator) {
         viewModel.updateProgress(pageIndex, totalPages, locator)
+        
+        // Safety fallback: If we have meaningful pagination information, the book is definitely "ready"
+        // even if onPageLoaded hasn't finished its jump-refresh yet.
+        if (totalPages > 1 && !viewModel.isBookReady.value) {
+            Log.d("ReaderFragment", "Setting book ready via onPageChanged fallback (totalPages: $totalPages)")
+            viewModel.setBookReady(true)
+        }
     }
 
     private var hasInitialRecalculationDone = false
@@ -496,30 +500,52 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     override fun onPageLoaded() {
         super.onPageLoaded()
         
+        Log.d("ReaderFragment", "onPageLoaded called. hasInitialRecalculationDone: $hasInitialRecalculationDone")
+
         // Only run this once per "open" to avoid infinite loops during page turns
         if (hasInitialRecalculationDone) return
         
         val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
         val preferences = currentPreferences
+        
         if (navigator != null && preferences != null) {
             navigator.lifecycleScope.launch {
-                // Wait for the WebView to be fully interactive
-                kotlinx.coroutines.delay(200)
-                
-                Log.d("ReaderFragment", "Forcing initial pagination recalculation via jump-refresh")
-                
-                // 1. Get current position
-                val currentLocator = navigator.currentLocator.value
-                
-                // 2. Force a jump to the exact same position. 
-                // In Readium, a 'go' call to the current locator forces a re-sync of the 
-                // internal navigator state and often triggers a fresh pagination report.
-                navigator.go(currentLocator, animated = false)
-                
-                // 3. Re-submit preferences to trigger a layout pass
-                navigator.submitPreferences(preferences)
-                
-                hasInitialRecalculationDone = true
+                try {
+                    // Wait for the WebView to be fully interactive
+                    kotlinx.coroutines.delay(500)
+                    
+                    Log.d("ReaderFragment", "Forcing initial pagination recalculation via jump-refresh")
+                    
+                    // 1. Get current position
+                    val currentLocator = navigator.currentLocator.value
+                    
+                    // 2. Force a jump to the exact same position. 
+                    navigator.go(currentLocator, animated = false)
+                    
+                    // 3. Re-submit preferences to trigger a layout pass
+                    navigator.submitPreferences(preferences)
+                    
+                    hasInitialRecalculationDone = true
+                    // Small delay to let the navigator process the jump before showing the UI
+                    kotlinx.coroutines.delay(200)
+                    viewModel.setBookReady(true)
+                } catch (e: Exception) {
+                    Log.e("ReaderFragment", "Error during initial pagination refresh", e)
+                    hasInitialRecalculationDone = true
+                    viewModel.setBookReady(true)
+                }
+            }
+        } else {
+            Log.d("ReaderFragment", "Navigator or preferences missing in onPageLoaded, using fallback")
+            hasInitialRecalculationDone = true
+            viewModel.setBookReady(true)
+        }
+        
+        // Universal safety: if we still aren't ready after 3 seconds, just show it
+        viewLifecycleOwner.lifecycleScope.launch {
+            kotlinx.coroutines.delay(3000)
+            if (!viewModel.isBookReady.value) {
+                Log.d("ReaderFragment", "Ready-state timeout reached, forcing ready")
                 viewModel.setBookReady(true)
             }
         }

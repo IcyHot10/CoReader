@@ -45,6 +45,8 @@ class ReaderViewModel(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
+    private var loadedBookId: Int? = null
+
     fun setBookReady(ready: Boolean) {
         _isBookReady.value = ready
         if (ready) {
@@ -53,14 +55,14 @@ class ReaderViewModel(
     }
 
     fun updateProgress(pageIndex: Int, totalPages: Int, locator: org.readium.r2.shared.publication.Locator) {
-        val pub = _publication.value
-        val chapterLabel = pub?.let {
+        val pub = _publication.value ?: return
+        val chapterLabel = pub.let {
             val totalChapters = it.readingOrder.size
             val currentChapterIndex = it.readingOrder.indexOfFirst { link -> link.url() == locator.href }
             if (currentChapterIndex != -1) {
                 "Chapter ${currentChapterIndex + 1} of $totalChapters"
             } else ""
-        } ?: ""
+        }
 
         val progression = locator.locations.totalProgression?.toFloat() ?: (pageIndex.toFloat() / totalPages.coerceAtLeast(1))
         _progress.value = ReadingProgress(
@@ -82,25 +84,37 @@ class ReaderViewModel(
     }
 
     fun loadActiveBook() {
-        if (_publication.value != null) {
-            Log.d("ReaderViewModel", "Book already loaded, skipping loadActiveBook")
-            return
-        }
         Log.d("ReaderViewModel", "loadActiveBook called")
         viewModelScope.launch {
             val database = AppRoomDatabase.getDatabase(getApplication())
             val activeBook = database.bookDao().getActive()
             Log.d("ReaderViewModel", "Active book: $activeBook")
-            if (activeBook != null) {
-                val bookFile = File(activeBook.filePath)
-                Log.d("ReaderViewModel", "Book file path: ${activeBook.filePath}, exists: ${bookFile.exists()}")
-                if (bookFile.exists()) {
-                    openBook(bookFile, progression = activeBook.progression)
-                } else {
-                    _error.value = "Book file not found at ${activeBook.filePath}"
-                }
-            } else {
+            
+            if (activeBook == null) {
                 _error.value = "No active book found"
+                return@launch
+            }
+
+            // If it's a different book, clear state immediately
+            if (activeBook.id != loadedBookId) {
+                Log.d("ReaderViewModel", "Switching from $loadedBookId to ${activeBook.id}")
+                _publication.value = null
+                _isBookReady.value = false
+                hasEverLoaded = false
+                _progress.value = ReadingProgress()
+                _initialLocator.value = null
+            } else if (_publication.value != null) {
+                Log.d("ReaderViewModel", "Book ${activeBook.id} already loaded, skipping")
+                return@launch
+            }
+
+            val bookFile = File(activeBook.filePath)
+            Log.d("ReaderViewModel", "Book file path: ${activeBook.filePath}, exists: ${bookFile.exists()}")
+            if (bookFile.exists()) {
+                loadedBookId = activeBook.id
+                openBook(bookFile, progression = activeBook.progression)
+            } else {
+                _error.value = "Book file not found at ${activeBook.filePath}"
             }
         }
     }

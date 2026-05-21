@@ -11,6 +11,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -62,6 +65,9 @@ import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material3.Button
 import androidx.compose.material3.FloatingActionButton
@@ -112,7 +118,7 @@ import java.io.FileOutputStream
 import kotlin.coroutines.CoroutineContext
 
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
     val context = LocalContext.current
@@ -129,6 +135,9 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
     var activeBook by remember {
         mutableStateOf<RoomBook?>(null)
     }
+
+    var isDeletionMode by remember { mutableStateOf(false) }
+    var selectedBookIds by remember { mutableStateOf(setOf<Int>()) }
 
     LaunchedEffect(Unit) {
         database.bookDao().getActiveFlow().collect { book ->
@@ -179,25 +188,65 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Teal,
                     titleContentColor = MaterialTheme.colorScheme.secondary),
-                title = { Text("CoReader Library") },
+                title = { Text(if (isDeletionMode) "${selectedBookIds.size} Selected" else "CoReader Library") },
                 navigationIcon = {
-                    IconButton(onClick = { 
-                        scope.launch {
-                            if (drawerState.isClosed) drawerState.open() else drawerState.close()
+                    if (isDeletionMode) {
+                        IconButton(onClick = { 
+                            isDeletionMode = false 
+                            selectedBookIds = emptySet()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "Exit Deletion Mode"
+                            )
                         }
-                    }) {
-                        Icon(
-                            imageVector = Icons.Filled.Menu,
-                            contentDescription = "Open Burger Menu"
-                        )
+                    } else {
+                        IconButton(onClick = { 
+                            scope.launch {
+                                if (drawerState.isClosed) drawerState.open() else drawerState.close()
+                            }
+                        }) {
+                            Icon(
+                                imageVector = Icons.Filled.Menu,
+                                contentDescription = "Open Burger Menu"
+                            )
+                        }
                     }
                 },
                 actions = {
-                    IconButton(onClick = { displayMoreMenu = !displayMoreMenu }) {
-                        Icon(
-                            imageVector = Icons.Filled.MoreVert,
-                            contentDescription = "Open More"
-                        )
+                    if (isDeletionMode) {
+                        if (selectedBookIds.isNotEmpty()) {
+                            IconButton(onClick = {
+                                scope.launch(Dispatchers.IO) {
+                                    selectedBookIds.forEach { id ->
+                                        val book = database.bookDao().getById(id)
+                                        book?.let {
+                                            val file = File(it.filePath)
+                                            if (file.exists()) {
+                                                file.delete()
+                                            }
+                                            database.bookDao().markAsDeleted(id)
+                                        }
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        isDeletionMode = false
+                                        selectedBookIds = emptySet()
+                                    }
+                                }
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Filled.Delete,
+                                    contentDescription = "Delete Selected"
+                                )
+                            }
+                        }
+                    } else {
+                        IconButton(onClick = { displayMoreMenu = !displayMoreMenu }) {
+                            Icon(
+                                imageVector = Icons.Filled.MoreVert,
+                                contentDescription = "Open More"
+                            )
+                        }
                     }
                 }
             )
@@ -220,7 +269,28 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
                         Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             for (book in row){
                                 Spacer(modifier = Modifier.width(4.dp))
-                                BookCard(book, routeToBook, Modifier.weight(1f), context)
+                                BookCard(
+                                    book = book, 
+                                    routeToBook = routeToBook, 
+                                    modifier = Modifier.weight(1f), 
+                                    context = context,
+                                    isDeletionMode = isDeletionMode,
+                                    isSelected = selectedBookIds.contains(book.id),
+                                    onLongClick = { 
+                                        isDeletionMode = true 
+                                        selectedBookIds = selectedBookIds + book.id
+                                    },
+                                    onToggleSelection = {
+                                        if (selectedBookIds.contains(book.id)) {
+                                            selectedBookIds = selectedBookIds - book.id
+                                            if (selectedBookIds.isEmpty()) {
+                                                isDeletionMode = false
+                                            }
+                                        } else {
+                                            selectedBookIds = selectedBookIds + book.id
+                                        }
+                                    }
+                                )
                                 Spacer(modifier = Modifier.width(4.dp))
                             }
                             if (row.size < 3){
@@ -240,26 +310,68 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun BookCard(book: RoomBook, routeToBook: () -> Unit, modifier: Modifier = Modifier, context: Context) {
+fun BookCard(
+    book: RoomBook, 
+    routeToBook: () -> Unit, 
+    modifier: Modifier = Modifier, 
+    context: Context,
+    isDeletionMode: Boolean,
+    isSelected: Boolean,
+    onLongClick: () -> Unit,
+    onToggleSelection: () -> Unit
+) {
     val database by lazy { AppRoomDatabase.getDatabase(context = context) }
     val scope = rememberCoroutineScope()
-    Column(modifier = modifier.clickable( onClick = {
-        scope.launch(Dispatchers.IO) {
-            database.bookDao().setInActive()
-            database.bookDao().setActive(book.id)
-            withContext(Dispatchers.Main) {
-                routeToBook()
+    Column(
+        modifier = modifier.combinedClickable(
+            onClick = {
+                if (isDeletionMode) {
+                    onToggleSelection()
+                } else {
+                    scope.launch(Dispatchers.IO) {
+                        database.bookDao().setInActive()
+                        database.bookDao().setActive(book.id)
+                        withContext(Dispatchers.Main) {
+                            routeToBook()
+                        }
+                    }
+                }
+            },
+            onLongClick = onLongClick
+        ), 
+        verticalArrangement = Arrangement.SpaceEvenly, 
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Spacer(modifier = Modifier.height(10.dp))
+        Box {
+            Image(
+                bitmap = book.cover?.let { BitmapFactory.decodeFile(it) }?.asImageBitmap() ?: ImageBitmap.imageResource(R.drawable.logo),
+                contentDescription = book.title,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(175.dp),
+                contentScale = ContentScale.Crop,
+                alpha = if (isSelected) 0.5f else 1f
+            )
+            if (isSelected) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(175.dp)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Check,
+                        contentDescription = "Selected",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(48.dp)
+                    )
+                }
             }
         }
-    }), verticalArrangement = Arrangement.SpaceEvenly, horizontalAlignment = Alignment.CenterHorizontally) {
-        Spacer(modifier = Modifier.height(10.dp))
-        Image(
-            bitmap = book.cover?.let { BitmapFactory.decodeFile(it) }?.asImageBitmap() ?: ImageBitmap.imageResource(R.drawable.logo),
-            contentDescription = book.title,
-            modifier = Modifier.fillMaxWidth().height(175.dp),
-            contentScale = ContentScale.Crop
-        )
     }
 }
 
