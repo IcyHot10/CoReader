@@ -223,7 +223,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                 }
                             },
                             update = { },
-                            modifier = Modifier.weight(1f).fillMaxWidth()
+                            modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 5.dp)
                         )
 
                         // Permanent Footer (Page/Chapter Info)

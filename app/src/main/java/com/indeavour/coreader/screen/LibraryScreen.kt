@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,6 +28,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -55,6 +58,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.indeavour.coreader.viewmodel.UserViewModel
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.indeavour.coreader.ui.theme.Teal
@@ -129,7 +133,7 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
     val user by userViewModel.user.collectAsState()
 
     var books by remember {
-        mutableStateOf(mutableListOf<MutableList<RoomBook>>())
+        mutableStateOf(listOf<RoomBook>())
     }
 
     var activeBook by remember {
@@ -148,19 +152,7 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
 
     LaunchedEffect(Unit) {
         database.bookDao().getAll().collect { booksList ->
-            var counter = 0
-            var row = -1
-            val newBooks: MutableList<MutableList<RoomBook>> = mutableListOf()
-            for (book in booksList) {
-                if (counter % 3 == 0){
-                    newBooks.add(mutableListOf(book))
-                    row++
-                } else {
-                    newBooks[row].add(book)
-                }
-                counter++
-            }
-            books = newBooks
+            books = booksList
         }
     }
 
@@ -264,20 +256,30 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
         }) {
             innerPadding ->
             Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-                Column(modifier = Modifier.fillMaxSize().align(Alignment.TopCenter).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.Top) {
-                    for (row in books){
-                        Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            for (book in row){
+                val configuration = LocalConfiguration.current
+                val columns = (configuration.screenWidthDp / 120).coerceAtLeast(1)
+                val bookRows = remember(books, columns) { books.chunked(columns) }
+
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(8.dp)
+                ) {
+                    items(bookRows) { row ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            for (book in row) {
                                 Spacer(modifier = Modifier.width(4.dp))
                                 BookCard(
-                                    book = book, 
-                                    routeToBook = routeToBook, 
-                                    modifier = Modifier.weight(1f), 
+                                    book = book,
+                                    routeToBook = routeToBook,
+                                    modifier = Modifier.weight(1f),
                                     context = context,
                                     isDeletionMode = isDeletionMode,
                                     isSelected = selectedBookIds.contains(book.id),
-                                    onLongClick = { 
-                                        isDeletionMode = true 
+                                    onLongClick = {
+                                        isDeletionMode = true
                                         selectedBookIds = selectedBookIds + book.id
                                     },
                                     onToggleSelection = {
@@ -293,15 +295,16 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                             }
-                            if (row.size < 3){
-                                for (i in 0 until 3 - row.size) {
+                            // Add invisible spacers to maintain grid alignment if the row is incomplete
+                            if (row.size < columns) {
+                                repeat(columns - row.size) {
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Spacer(modifier = Modifier.weight(1f))
                                     Spacer(modifier = Modifier.width(4.dp))
                                 }
                             }
                         }
-                        HorizontalDivider(thickness = 10.dp, color = Teal)
+                        HorizontalDivider(thickness = 10.dp, color = Teal, modifier = Modifier.padding(top = 8.dp))
                     }
                 }
                 if (displayMoreMenu) MoreMenu(Modifier.width(200.dp).height(150.dp).align(Alignment.TopEnd), toggleMoreMenu)
