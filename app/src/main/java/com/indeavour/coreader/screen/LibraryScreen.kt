@@ -124,7 +124,7 @@ import kotlin.coroutines.CoroutineContext
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
+fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGroup: () -> Unit){
     val context = LocalContext.current
     val database by lazy { AppRoomDatabase.getDatabase(context = context) }
     val scope = rememberCoroutineScope()
@@ -171,7 +171,7 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit){
                 modifier = Modifier.width(325.dp),
                 drawerContainerColor = MaterialTheme.colorScheme.primaryContainer
             ) {
-                SideMenuContent(user, userViewModel, routeToLogin)
+                SideMenuContent(user, userViewModel, routeToLogin, routeToGroup)
             }
         }
     ) {
@@ -379,7 +379,7 @@ fun BookCard(
 }
 
 @Composable
-fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin: () -> Unit){
+fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin: () -> Unit, routeToGroup: () -> Unit){
     val auth = FirebaseAuth.getInstance()
     val context = LocalContext.current
     var showEditDialog by remember { mutableStateOf(false) }
@@ -452,7 +452,7 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
             }
             Image(painter = painterResource(R.drawable.library_image), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth())
             val textButtonModifier = Modifier.fillMaxWidth().height(50.dp).align(Alignment.CenterHorizontally)
-            Button(onClick = {}, modifier = textButtonModifier, shape = RectangleShape) { Text("Manage Group", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
+            Button(onClick = routeToGroup, modifier = textButtonModifier, shape = RectangleShape) { Text("Manage Group", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
             Button(onClick = {}, modifier = textButtonModifier, shape = RectangleShape) { Text("View Group Book Progress", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
             Button(onClick = {}, modifier = textButtonModifier, shape = RectangleShape) { Text("View To Read List", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
         }
@@ -565,5 +565,5 @@ fun MoreMenu(modifier: Modifier, toggle: () -> Unit){
 @Preview
 @Composable
 fun LibraryScreenPreview(){
-    LibraryScreen({}, {})
+    LibraryScreen({}, {}, {})
 }
