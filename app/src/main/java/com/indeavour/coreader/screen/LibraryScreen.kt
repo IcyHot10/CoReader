@@ -49,6 +49,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TopAppBarDefaults
 import com.indeavour.coreader.model.firebase.UserModel
+import com.indeavour.coreader.model.firebase.GroupBook
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,6 +58,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.indeavour.coreader.viewmodel.UserViewModel
+import com.indeavour.coreader.viewmodel.GroupViewModel
+import com.indeavour.coreader.model.firebase.BookModel
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.tooling.preview.Preview
@@ -73,6 +76,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material3.Button
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -131,6 +135,9 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val userViewModel: UserViewModel = viewModel()
     val user by userViewModel.user.collectAsState()
+    val groupViewModel: GroupViewModel = viewModel()
+    val activeGroupId by groupViewModel.activeGroupId.collectAsState()
+    val groupBooks by groupViewModel.groupBooks.collectAsState()
 
     var books by remember {
         mutableStateOf(listOf<RoomBook>())
@@ -291,6 +298,35 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                                         } else {
                                             selectedBookIds = selectedBookIds + book.id
                                         }
+                                    },
+                                    user = user,
+                                    activeGroupId = activeGroupId,
+                                    groupBooks = groupBooks,
+                                    onUpload = { bookModel ->
+                                        val bKey = "${book.title}_${book.author}"
+                                        val isAlreadyInUserLibrary = user?.books?.containsKey(bKey) == true
+                                        
+                                        if (!isAlreadyInUserLibrary) {
+                                            userViewModel.addBook(bookModel) { _, _ -> 
+                                                // Even if adding to user library fails, we still try to upload to group
+                                                // though usually it should succeed.
+                                                groupViewModel.uploadBookToGroup(bookModel) { success ->
+                                                    if (success) {
+                                                        AppUtils.showToast(context, "Book uploaded to group")
+                                                    } else {
+                                                        AppUtils.showToast(context, "Failed to upload book")
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            groupViewModel.uploadBookToGroup(bookModel) { success ->
+                                                if (success) {
+                                                    AppUtils.showToast(context, "Book uploaded to group")
+                                                } else {
+                                                    AppUtils.showToast(context, "Failed to upload book")
+                                                }
+                                            }
+                                        }
                                     }
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
@@ -323,10 +359,18 @@ fun BookCard(
     isDeletionMode: Boolean,
     isSelected: Boolean,
     onLongClick: () -> Unit,
-    onToggleSelection: () -> Unit
+    onToggleSelection: () -> Unit,
+    user: UserModel?,
+    activeGroupId: String?,
+    groupBooks: Map<String, GroupBook>,
+    onUpload: (BookModel) -> Unit
 ) {
     val database by lazy { AppRoomDatabase.getDatabase(context = context) }
     val scope = rememberCoroutineScope()
+    val bookKey = "${book.title}_${book.author}"
+    val isUploaded = groupBooks.containsKey(bookKey)
+    val showUploadButton = activeGroupId != null && !isUploaded && !isDeletionMode
+
     Column(
         modifier = modifier.combinedClickable(
             onClick = {
@@ -358,6 +402,32 @@ fun BookCard(
                 contentScale = ContentScale.Crop,
                 alpha = if (isSelected) 0.5f else 1f
             )
+            
+            if (showUploadButton) {
+                IconButton(
+                    onClick = {
+                        val bookModel = user?.books?.get(bookKey) ?: BookModel(
+                            title = book.title,
+                            author = book.author,
+                            progress = book.progression ?: "0"
+                        )
+                        onUpload(bookModel)
+                    },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f), CircleShape)
+                        .size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.CloudUpload,
+                        contentDescription = "Upload to Group",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
             if (isSelected) {
                 Box(
                     modifier = Modifier
@@ -498,6 +568,8 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
 fun MoreMenu(modifier: Modifier, toggle: () -> Unit){
     var context = LocalContext.current
     val database by lazy { AppRoomDatabase.getDatabase(context = context) }
+    val userViewModel: UserViewModel = viewModel()
+    val user by userViewModel.user.collectAsState()
 
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
@@ -534,14 +606,44 @@ fun MoreMenu(modifier: Modifier, toggle: () -> Unit){
                         val publication = publicationOpener.open(asset, allowUserInteraction = true)
                             .getOrElse { withContext(Dispatchers.Main){AppUtils.showToast(context, "Failed to import $uri")} }
                         if (publication is Publication){
-                            database.bookDao().insert(RoomBook(
-                                title = publication.metadata.title ?: "Untitled Book",
-                                author = publication.metadata.authors.firstOrNull()?.name ?: "Unknown Author",
-                                cover = publication.cover()?.let { AppUtils.saveBitmapToInternalStorage(context, it, publication.metadata.title ?: "Untitled Book") },
-                                filePath = destFile.absolutePath,
-                                isFavourite = false,
-                                uri = uri.toString()
-                            ))
+                            val title = publication.metadata.title ?: "Untitled Book"
+                            val author = publication.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
+                            val bookKey = "${title}_${author}"
+                            val firebaseBook = user?.books?.get(bookKey)
+                            val progress = firebaseBook?.progress ?: "0"
+
+                            val existingBook = database.bookDao().findByTitleAndAuthor(title, author)
+
+                            if (existingBook != null) {
+                                if (existingBook.isDeleted) {
+                                    database.bookDao().restoreBook(existingBook.id, destFile.absolutePath, uri.toString())
+                                    database.bookDao().updateProgressionByTitleAndAuthor(title, author, progress)
+                                    userViewModel.addBook(BookModel(title, author, progress), { success, message ->
+                                        CoroutineScope(Dispatchers.Main).launch {
+                                            AppUtils.showToast(context, message)
+                                        }
+                                    })
+                                } else {
+                                    withContext(Dispatchers.Main) {
+                                        AppUtils.showToast(context, "Book is already in the library")
+                                    }
+                                }
+                            } else {
+                                database.bookDao().insert(RoomBook(
+                                    title = title,
+                                    author = author,
+                                    cover = publication.cover()?.let { AppUtils.saveBitmapToInternalStorage(context, it, title) },
+                                    filePath = destFile.absolutePath,
+                                    isFavourite = false,
+                                    uri = uri.toString(),
+                                    progression = progress
+                                ))
+                                userViewModel.addBook(BookModel(title, author, progress), { success, message ->
+                                    CoroutineScope(Dispatchers.Main).launch {
+                                        AppUtils.showToast(context, message)
+                                    }
+                                })
+                            }
                         }
                     }
                 }

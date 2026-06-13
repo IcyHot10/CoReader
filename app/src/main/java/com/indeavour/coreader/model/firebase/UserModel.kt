@@ -4,5 +4,6 @@ data class UserModel(
     val username : String = "",
     val email : String = "",
     val groupIDs : List<String> = emptyList(),
-    val activeGroup : String? = null
+    val activeGroup : String? = null,
+    val books : Map<String, BookModel> = emptyMap()
 )

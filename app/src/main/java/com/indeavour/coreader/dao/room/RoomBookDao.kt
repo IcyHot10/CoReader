@@ -32,6 +32,15 @@ interface RoomBookDao {
     @Query("UPDATE book SET progression = :progression WHERE is_active = 1")
     suspend fun updateActiveBookProgression(progression: String)
 
+    @Query("UPDATE book SET progression = :progression WHERE title = :title AND author = :author")
+    suspend fun updateProgressionByTitleAndAuthor(title: String, author: String, progression: String)
+
+    @Query("SELECT * FROM book WHERE title = :title AND author = :author LIMIT 1")
+    suspend fun findByTitleAndAuthor(title: String, author: String): RoomBook?
+
+    @Query("UPDATE book SET is_deleted = 0, file_path = :filePath, uri = :uri WHERE id = :id")
+    suspend fun restoreBook(id: Int, filePath: String, uri: String)
+
     @Insert
     suspend fun insert(book: RoomBook)
 

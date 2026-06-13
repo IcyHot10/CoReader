@@ -43,6 +43,9 @@ fun BookScreen(routeToLibrary: () -> Unit) {
 
     DisposableEffect(Unit) {
         onDispose {
+            // Save progression to Firestore when leaving the screen
+            viewModel.saveProgressionToFirestore()
+
             // Clean up the fragment when the screen is disposed (navigated away)
             val fragment = activity?.supportFragmentManager?.findFragmentById(com.indeavour.coreader.R.id.book_container)
             if (fragment != null) {

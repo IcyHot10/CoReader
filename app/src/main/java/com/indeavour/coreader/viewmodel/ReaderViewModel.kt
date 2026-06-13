@@ -8,10 +8,17 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.indeavour.coreader.AppRoomDatabase
+import com.indeavour.coreader.model.firebase.BookModel
+import com.indeavour.coreader.model.firebase.UserModel
 import com.indeavour.coreader.repository.ReaderRepository
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import org.readium.r2.shared.publication.Publication
 import java.io.File
 
@@ -19,6 +26,9 @@ class ReaderViewModel(
     private val application: Application,
     private val repository: ReaderRepository
 ) : AndroidViewModel(application) {
+
+    private val auth = FirebaseAuth.getInstance()
+    private val firestore = FirebaseFirestore.getInstance()
 
     private val _publication = MutableStateFlow<Publication?>(null)
     val publication: StateFlow<Publication?> = _publication
@@ -46,6 +56,8 @@ class ReaderViewModel(
     val error: StateFlow<String?> = _error
 
     private var loadedBookId: Int? = null
+
+    private var lastLocator: org.readium.r2.shared.publication.Locator? = null
 
     fun setBookReady(ready: Boolean) {
         _isBookReady.value = ready
@@ -75,12 +87,46 @@ class ReaderViewModel(
         // Update the initial locator so that if the fragment is recreated (e.g. theme change),
         // it stays on the current page.
         _initialLocator.value = locator
+        lastLocator = locator
 
-        // Save global progress to database
+        // Save progress to Room database on every page turn
         viewModelScope.launch {
             val database = AppRoomDatabase.getDatabase(getApplication())
             database.bookDao().updateActiveBookProgression(locator.toJSON().toString())
         }
+    }
+
+    fun saveProgressionToFirestore() {
+        val pub = _publication.value ?: return
+        val locator = lastLocator ?: return
+        val uid = auth.currentUser?.uid ?: return
+        val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
+        val progressionJson = locator.toJSON().toString()
+
+        // Use a scope that isn't tied to the ViewModel's lifecycle to ensure the save completes
+        // even if the ViewModel is cleared.
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val userRef = firestore.collection("users").document(uid)
+                val userDoc = userRef.get().await()
+                if (userDoc.exists()) {
+                    val userModel = userDoc.toObject(UserModel::class.java)
+                    val books = userModel?.books?.toMutableMap() ?: mutableMapOf()
+                    if (books.containsKey(bookKey)) {
+                        books[bookKey] = books[bookKey]!!.copy(progress = progressionJson)
+                        userRef.update("books", books).await()
+                        Log.d("ReaderViewModel", "Firestore progress updated on leave")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ReaderViewModel", "Failed to update Firestore progress on leave", e)
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        saveProgressionToFirestore()
     }
 
     fun loadActiveBook() {
@@ -112,7 +158,22 @@ class ReaderViewModel(
             Log.d("ReaderViewModel", "Book file path: ${activeBook.filePath}, exists: ${bookFile.exists()}")
             if (bookFile.exists()) {
                 loadedBookId = activeBook.id
-                openBook(bookFile, progression = activeBook.progression)
+                
+                // Fetch progress from Firestore
+                val uid = auth.currentUser?.uid
+                var progressFromFirestore: String? = null
+                if (uid != null) {
+                    try {
+                        val bookKey = "${activeBook.title}_${activeBook.author}"
+                        val userDoc = firestore.collection("users").document(uid).get().await()
+                        val userModel = userDoc.toObject(UserModel::class.java)
+                        progressFromFirestore = userModel?.books?.get(bookKey)?.progress
+                    } catch (e: Exception) {
+                        Log.e("ReaderViewModel", "Failed to fetch Firestore progress", e)
+                    }
+                }
+                
+                openBook(bookFile, progression = progressFromFirestore ?: activeBook.progression)
             } else {
                 _error.value = "Book file not found at ${activeBook.filePath}"
             }
@@ -141,6 +202,7 @@ class ReaderViewModel(
                     }
                     
                     _initialLocator.value = locator
+                    lastLocator = locator
                     _publication.value = pub
                 }.onFailure {
                     Log.e("ReaderViewModel", "Failed to open book", it)

@@ -4,6 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.indeavour.coreader.model.firebase.BookModel
+import com.indeavour.coreader.model.firebase.GroupBook
+import com.google.firebase.firestore.ListenerRegistration
 import com.indeavour.coreader.model.firebase.GroupModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,6 +24,11 @@ class GroupViewModel : ViewModel() {
     private val _activeGroupId = MutableStateFlow<String?>(null)
     val activeGroupId: StateFlow<String?> = _activeGroupId
 
+    private val _groupBooks = MutableStateFlow<Map<String, GroupBook>>(emptyMap())
+    val groupBooks: StateFlow<Map<String, GroupBook>> = _groupBooks
+
+    private var groupBooksListener: ListenerRegistration? = null
+
     init {
         fetchUserGroups()
     }
@@ -32,7 +40,17 @@ class GroupViewModel : ViewModel() {
             .addSnapshotListener { userDoc, error ->
                 if (error != null) return@addSnapshotListener
 
-                _activeGroupId.value = userDoc?.getString("activeGroup")
+                val newActiveGroupId = userDoc?.getString("activeGroup")
+                if (newActiveGroupId != _activeGroupId.value) {
+                    _activeGroupId.value = newActiveGroupId
+                    if (newActiveGroupId != null) {
+                        listenToGroupBooks(newActiveGroupId)
+                    } else {
+                        groupBooksListener?.remove()
+                        _groupBooks.value = emptyMap()
+                    }
+                }
+                
                 val groupIDs = (userDoc?.get("groupIDs") as? List<String> ?: emptyList()).filter { it.isNotBlank() }
 
                 if (groupIDs.isEmpty()) {
@@ -53,6 +71,58 @@ class GroupViewModel : ViewModel() {
                     }
                 }
             }
+    }
+
+    private fun listenToGroupBooks(groupCode: String) {
+        groupBooksListener?.remove()
+        groupBooksListener = firestore.collection("groupBooks").document(groupCode)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) return@addSnapshotListener
+                val gb = snapshot?.toObject(GroupBook::class.java)
+                val books = gb?.bookProgression?.values?.associateBy { "${it.title}_${it.author}" }
+                    ?.mapValues { gb } ?: emptyMap()
+                _groupBooks.value = books
+            }
+    }
+
+    fun uploadBookToGroup(book: BookModel, onResult: (Boolean) -> Unit) {
+        val uid = auth.currentUser?.uid ?: run {
+            onResult(false)
+            return
+        }
+        val groupCode = _activeGroupId.value ?: run {
+            onResult(false)
+            return
+        }
+        val docId = groupCode
+
+        viewModelScope.launch {
+            try {
+                val groupBookRef = firestore.collection("groupBooks").document(docId)
+                val groupBookDoc = groupBookRef.get().await()
+
+                if (groupBookDoc.exists()) {
+                    val groupBook = groupBookDoc.toObject(GroupBook::class.java)!!
+                    val updatedProgression = groupBook.bookProgression.toMutableMap()
+                    updatedProgression[uid] = book
+                    groupBookRef.update("bookProgression", updatedProgression).await()
+                } else {
+                    val newGroupBook = GroupBook(
+                        groupCode = groupCode,
+                        bookProgression = mapOf(uid to book)
+                    )
+                    groupBookRef.set(newGroupBook).await()
+                }
+                onResult(true)
+            } catch (e: Exception) {
+                onResult(false)
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        groupBooksListener?.remove()
     }
 
     fun createGroup(groupName: String, onResult: (Boolean, String?) -> Unit) {
