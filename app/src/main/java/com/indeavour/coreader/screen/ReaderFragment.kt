@@ -56,7 +56,7 @@ import org.readium.r2.shared.publication.Publication
 import org.readium.r2.shared.util.AbsoluteUrl
 
 @OptIn(ExperimentalReadiumApi::class)
-class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener, EpubNavigatorFragment.PaginationListener {
+class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener, EpubNavigatorFragment.PaginationListener, DecorableNavigator.Listener {
 
     private lateinit var viewModel: ReaderViewModel
 
@@ -505,28 +505,43 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             .replace(R.id.reader_container, EpubNavigatorFragment::class.java, null, "navigator")
 
         transaction.runOnCommit {
+            val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
             colorScheme?.let { scheme ->
-                val navigatorView = childFragmentManager.findFragmentByTag("navigator")?.view
-                navigatorView?.setBackgroundColor(scheme.background.toArgb())
+                navigator?.view?.setBackgroundColor(scheme.background.toArgb())
             }
+            // Register decoration listener
+            navigator?.addDecorationListener("highlights", this@ReaderFragment)
         }
 
         transaction.commit()
     }
 
-    private fun applyHighlights(locators: List<Locator>) {
+    private fun applyHighlights(highlights: List<ReaderViewModel.HighlightData>) {
         val navigator = childFragmentManager.findFragmentByTag("navigator") as? DecorableNavigator ?: return
-        Log.d("ReaderFragment", "Applying ${locators.size} highlights")
-        val decorations = locators.mapIndexed { index, locator ->
+        Log.d("ReaderFragment", "Applying ${highlights.size} highlights")
+        val decorations = highlights.mapIndexed { index, data ->
             Decoration(
                 id = "highlight-$index",
-                locator = locator,
-                style = Decoration.Style.Highlight(tint = 0x66FFFF00)
+                locator = data.locator,
+                style = Decoration.Style.Highlight(tint = 0x66FFFF00, isActive = true),
+                extras = mapOf("userId" to data.userId)
             )
         }
         lifecycleScope.launch {
             navigator.applyDecorations(decorations, "highlights")
         }
+    }
+
+    override fun onDecorationActivated(event: DecorableNavigator.OnActivatedEvent): Boolean {
+        if (event.group == "highlights") {
+            val userId = event.decoration.extras["userId"] as? String
+            if (userId != null) {
+                val username = viewModel.usernames.value[userId] ?: "Unknown User"
+                android.widget.Toast.makeText(requireContext(), "Highlighted by: $username", android.widget.Toast.LENGTH_SHORT).show()
+                return true
+            }
+        }
+        return false
     }
 
     override fun onTap(event: TapEvent): Boolean {

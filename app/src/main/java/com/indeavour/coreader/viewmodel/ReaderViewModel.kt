@@ -57,8 +57,16 @@ class ReaderViewModel(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
-    private val _highlights = MutableStateFlow<List<Locator>>(emptyList())
-    val highlights: StateFlow<List<Locator>> = _highlights
+    data class HighlightData(
+        val locator: Locator,
+        val userId: String
+    )
+
+    private val _highlights = MutableStateFlow<List<HighlightData>>(emptyList())
+    val highlights: StateFlow<List<HighlightData>> = _highlights
+
+    private val _usernames = MutableStateFlow<Map<String, String>>(emptyMap())
+    val usernames: StateFlow<Map<String, String>> = _usernames
 
     private var loadedBookId: Int? = null
     private var loadedGroupId: String? = "none" // Use "none" as a sentinel for personal
@@ -234,40 +242,77 @@ class ReaderViewModel(
                 openBook(bookFile, progression = progressionToUse)
 
                 // Load highlights
-                val highlightsList = mutableListOf<Locator>()
+                val highlightsList = mutableListOf<HighlightData>()
+                val userIdsToFetch = mutableSetOf<String>()
                 if (uid != null) {
                     try {
                         val bookKey = "${activeBook.title}_${activeBook.author}"
                         if (currentActiveGroupId != "none") {
-                            Log.d("ReaderViewModel", "Loading user highlights from group: $currentActiveGroupId")
+                            Log.d("ReaderViewModel", "Loading ALL group highlights from group: $currentActiveGroupId")
                             val groupBookDoc = firestore.collection("groupBooks").document(currentActiveGroupId).get().await()
                             if (groupBookDoc.exists()) {
                                 val groupBook = groupBookDoc.toObject(GroupBook::class.java)
-                                val userBookInGroup = groupBook?.bookProgression?.get(uid)
                                 
-                                // Only load highlights if they belong to the current book
-                                if (userBookInGroup?.title == activeBook.title && userBookInGroup.author == activeBook.author) {
-                                    userBookInGroup.highlights.forEach { json ->
-                                        try {
-                                            Locator.fromJSON(org.json.JSONObject(json))?.let {
-                                                highlightsList.add(it)
-                                            }
-                                        } catch (e: Exception) {}
+                                // Load highlights from EVERYONE in the group for this book
+                                groupBook?.bookProgression?.forEach { (memberId, bookModel) ->
+                                    if (bookModel.title == activeBook.title && bookModel.author == activeBook.author) {
+                                        userIdsToFetch.add(memberId)
+                                        bookModel.highlights.forEach { entryJson ->
+                                            try {
+                                                val obj = org.json.JSONObject(entryJson)
+                                                val locJson = obj.optJSONObject("locator")
+                                                val hUserId = obj.optString("userId", memberId)
+                                                val locator = if (locJson != null) {
+                                                    Locator.fromJSON(locJson)
+                                                } else {
+                                                    // Fallback for old format
+                                                    Locator.fromJSON(obj)
+                                                }
+                                                if (locator != null) {
+                                                    highlightsList.add(HighlightData(locator, hUserId))
+                                                    userIdsToFetch.add(hUserId)
+                                                }
+                                            } catch (e: Exception) {}
+                                        }
                                     }
-                                } else {
-                                    Log.d("ReaderViewModel", "Group book model mismatch: ${userBookInGroup?.title} vs ${activeBook.title}")
                                 }
                             }
                         } else {
                             Log.d("ReaderViewModel", "No active group, loading personal highlights for: $bookKey")
-                            userModel?.books?.get(bookKey)?.highlights?.forEach { json ->
+                            userIdsToFetch.add(uid)
+                            userModel?.books?.get(bookKey)?.highlights?.forEach { entryJson ->
                                 try {
-                                    Locator.fromJSON(org.json.JSONObject(json))?.let {
-                                        highlightsList.add(it)
+                                    val obj = org.json.JSONObject(entryJson)
+                                    val locJson = obj.optJSONObject("locator")
+                                    val hUserId = obj.optString("userId", uid)
+                                    val locator = if (locJson != null) {
+                                        Locator.fromJSON(locJson)
+                                    } else {
+                                        Locator.fromJSON(obj)
+                                    }
+                                    if (locator != null) {
+                                        highlightsList.add(HighlightData(locator, hUserId))
+                                        userIdsToFetch.add(hUserId)
                                     }
                                 } catch (e: Exception) {}
                             }
                         }
+
+                        // Fetch usernames for all unique user IDs
+                        val nameMap = _usernames.value.toMutableMap()
+                        userIdsToFetch.forEach { id ->
+                            if (!nameMap.containsKey(id)) {
+                                try {
+                                    val userSnapshot = firestore.collection("users").document(id).get().await()
+                                    val name = userSnapshot.getString("username") ?: "Unknown"
+                                    nameMap[id] = name
+                                } catch (e: Exception) {
+                                    nameMap[id] = "Unknown"
+                                }
+                            }
+                        }
+                        _usernames.value = nameMap
+
                     } catch (e: Exception) {
                         Log.e("ReaderViewModel", "Failed to load highlights", e)
                     }
@@ -284,9 +329,6 @@ class ReaderViewModel(
         val pub = _publication.value ?: return
         val uid = auth.currentUser?.uid ?: return
         val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
-        val locatorJson = locator.toJSON().toString()
-
-        _highlights.value = _highlights.value + locator
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -295,6 +337,19 @@ class ReaderViewModel(
                 if (userDoc.exists()) {
                     val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
                     val activeGroupId = userModel.activeGroup
+
+                    val highlightEntry = org.json.JSONObject().apply {
+                        put("locator", locator.toJSON())
+                        put("userId", uid)
+                    }.toString()
+
+                    // Optimistically update local state
+                    val nameMap = _usernames.value.toMutableMap()
+                    if (!nameMap.containsKey(uid)) {
+                        nameMap[uid] = userModel.username
+                        _usernames.value = nameMap
+                    }
+                    _highlights.value = _highlights.value + HighlightData(locator, uid)
 
                     if (activeGroupId != null) {
                         val groupBookRef = firestore.collection("groupBooks").document(activeGroupId)
@@ -317,7 +372,7 @@ class ReaderViewModel(
                         }
 
                         val currentHighlights = userBook.highlights.toMutableList()
-                        currentHighlights.add(locatorJson)
+                        currentHighlights.add(highlightEntry)
                         progression[uid] = userBook.copy(highlights = currentHighlights)
                         
                         if (groupBookDoc.exists()) {
@@ -332,7 +387,7 @@ class ReaderViewModel(
                             author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
                         )
                         val currentHighlights = userBook.highlights.toMutableList()
-                        currentHighlights.add(locatorJson)
+                        currentHighlights.add(highlightEntry)
                         books[bookKey] = userBook.copy(highlights = currentHighlights)
                         userRef.update("books", books).await()
                     }

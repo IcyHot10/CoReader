@@ -7,6 +7,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.indeavour.coreader.model.firebase.BookModel
 import com.indeavour.coreader.model.firebase.GroupBook
 import com.google.firebase.firestore.ListenerRegistration
+import com.indeavour.coreader.model.firebase.GroupMember
 import com.indeavour.coreader.model.firebase.GroupModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -109,7 +110,7 @@ class GroupViewModel : ViewModel() {
                 } else {
                     val newGroupBook = GroupBook(
                         groupCode = groupCode,
-                        bookProgression = mapOf(uid to book)
+                        bookProgression = mapOf(uid to book.copy(highlights = emptyList()))
                     )
                     groupBookRef.set(newGroupBook).await()
                 }
@@ -132,7 +133,8 @@ class GroupViewModel : ViewModel() {
                 val groupCode = generateUniqueCode()
                 val group = GroupModel(
                     groupCode = groupCode,
-                    groupName = groupName
+                    groupName = groupName,
+                    groupMembers = mapOf(uid to GroupMember(isAdmin = true, highlightColour = "0x66FFFF00"))
                 )
 
                 // 1. Add group to user's group list
@@ -180,6 +182,13 @@ class GroupViewModel : ViewModel() {
 
                 val updatedGroups = currentGroups + groupCode
                 userRef.update("groupIDs", updatedGroups).await()
+
+                // Update group members list
+                val groupRef = firestore.collection("groups").document(groupCode)
+                val group = groupDoc.toObject(GroupModel::class.java)!!
+                val updatedMembers = group.groupMembers.toMutableMap()
+                updatedMembers[uid] = GroupMember(isAdmin = false, highlightColour = "0x66FFFF00")
+                groupRef.update("groupMembers", updatedMembers).await()
 
                 if (userDoc.getString("activeGroup") == null) {
                     userRef.update("activeGroup", groupCode).await()
