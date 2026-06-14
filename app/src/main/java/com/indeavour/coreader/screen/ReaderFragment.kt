@@ -39,6 +39,8 @@ import com.indeavour.coreader.ui.theme.Teal
 import com.indeavour.coreader.viewmodel.ReaderViewModel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import org.readium.r2.navigator.DecorableNavigator
+import org.readium.r2.navigator.Decoration
 import org.readium.r2.navigator.epub.EpubNavigatorFactory
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
 import org.readium.r2.navigator.epub.EpubPreferences
@@ -125,6 +127,13 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         LaunchedEffect(publication, isContainerReady) {
             if (isContainerReady && publication != null) {
                 showPublication(publication!!, colorScheme, viewModel.initialLocator.value)
+            }
+        }
+
+        val highlights by viewModel.highlights.collectAsState()
+        LaunchedEffect(highlights, isBookReady) {
+            if (isBookReady) {
+                applyHighlights(highlights)
             }
         }
         
@@ -455,6 +464,31 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     textColor = ReadiumColor.Int(scheme.onBackground.toArgb())
                 )
             }
+            selectionActionModeCallback = object : android.view.ActionMode.Callback {
+                override fun onCreateActionMode(mode: android.view.ActionMode, menu: android.view.Menu): Boolean {
+                    menu.add(0, 1001, 0, "Highlight")
+                    return true
+                }
+
+                override fun onPrepareActionMode(mode: android.view.ActionMode, menu: android.view.Menu): Boolean = false
+
+                override fun onActionItemClicked(mode: android.view.ActionMode, item: android.view.MenuItem): Boolean {
+                    if (item.itemId == 1001) {
+                        val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+                        navigator?.lifecycleScope?.launch {
+                            val selection = navigator.currentSelection()
+                            selection?.locator?.let {
+                                viewModel.addHighlight(it)
+                            }
+                            mode.finish()
+                        }
+                        return true
+                    }
+                    return false
+                }
+
+                override fun onDestroyActionMode(mode: android.view.ActionMode) {}
+            }
         }
 
         val factory = EpubNavigatorFactory(publication).createFragmentFactory(
@@ -478,6 +512,21 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         }
 
         transaction.commit()
+    }
+
+    private fun applyHighlights(locators: List<Locator>) {
+        val navigator = childFragmentManager.findFragmentByTag("navigator") as? DecorableNavigator ?: return
+        Log.d("ReaderFragment", "Applying ${locators.size} highlights")
+        val decorations = locators.mapIndexed { index, locator ->
+            Decoration(
+                id = "highlight-$index",
+                locator = locator,
+                style = Decoration.Style.Highlight(tint = 0x66FFFF00)
+            )
+        }
+        lifecycleScope.launch {
+            navigator.applyDecorations(decorations, "highlights")
+        }
     }
 
     override fun onTap(event: TapEvent): Boolean {
@@ -526,6 +575,9 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         super.onPageLoaded()
         
         Log.d("ReaderFragment", "onPageLoaded called. hasInitialRecalculationDone: $hasInitialRecalculationDone")
+
+        // Re-apply highlights whenever a page is loaded to ensure they are visible
+        applyHighlights(viewModel.highlights.value)
 
         // Only run this once per "open" to avoid infinite loops during page turns
         if (hasInitialRecalculationDone) return

@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.indeavour.coreader.AppRoomDatabase
 import com.indeavour.coreader.model.firebase.BookModel
+import com.indeavour.coreader.model.firebase.GroupBook
 import com.indeavour.coreader.model.firebase.UserModel
 import com.indeavour.coreader.repository.ReaderRepository
 import com.google.firebase.auth.FirebaseAuth
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import org.readium.r2.shared.publication.Locator
 import org.readium.r2.shared.publication.Publication
 import java.io.File
 
@@ -33,8 +35,8 @@ class ReaderViewModel(
     private val _publication = MutableStateFlow<Publication?>(null)
     val publication: StateFlow<Publication?> = _publication
 
-    private val _initialLocator = MutableStateFlow<org.readium.r2.shared.publication.Locator?>(null)
-    val initialLocator: StateFlow<org.readium.r2.shared.publication.Locator?> = _initialLocator
+    private val _initialLocator = MutableStateFlow<Locator?>(null)
+    val initialLocator: StateFlow<Locator?> = _initialLocator
 
     data class ReadingProgress(
         val value: Float = 0f,
@@ -55,9 +57,13 @@ class ReaderViewModel(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
-    private var loadedBookId: Int? = null
+    private val _highlights = MutableStateFlow<List<Locator>>(emptyList())
+    val highlights: StateFlow<List<Locator>> = _highlights
 
-    private var lastLocator: org.readium.r2.shared.publication.Locator? = null
+    private var loadedBookId: Int? = null
+    private var loadedGroupId: String? = "none" // Use "none" as a sentinel for personal
+
+    private var lastLocator: Locator? = null
 
     fun setBookReady(ready: Boolean) {
         _isBookReady.value = ready
@@ -66,7 +72,7 @@ class ReaderViewModel(
         }
     }
 
-    fun updateProgress(pageIndex: Int, totalPages: Int, locator: org.readium.r2.shared.publication.Locator) {
+    fun updateProgress(pageIndex: Int, totalPages: Int, locator: Locator) {
         val pub = _publication.value ?: return
         val chapterLabel = pub.let {
             val totalChapters = it.readingOrder.size
@@ -103,19 +109,47 @@ class ReaderViewModel(
         val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
         val progressionJson = locator.toJSON().toString()
 
-        // Use a scope that isn't tied to the ViewModel's lifecycle to ensure the save completes
-        // even if the ViewModel is cleared.
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val userRef = firestore.collection("users").document(uid)
                 val userDoc = userRef.get().await()
                 if (userDoc.exists()) {
-                    val userModel = userDoc.toObject(UserModel::class.java)
-                    val books = userModel?.books?.toMutableMap() ?: mutableMapOf()
-                    if (books.containsKey(bookKey)) {
-                        books[bookKey] = books[bookKey]!!.copy(progress = progressionJson)
-                        userRef.update("books", books).await()
-                        Log.d("ReaderViewModel", "Firestore progress updated on leave")
+                    val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
+                    val activeGroupId = userModel.activeGroup
+
+                    if (activeGroupId != null) {
+                        val groupBookRef = firestore.collection("groupBooks").document(activeGroupId)
+                        val groupBookDoc = groupBookRef.get().await()
+                        
+                        val progression = if (groupBookDoc.exists()) {
+                            groupBookDoc.toObject(GroupBook::class.java)?.bookProgression?.toMutableMap() ?: mutableMapOf()
+                        } else {
+                            mutableMapOf()
+                        }
+                        
+                        val existingInGroup = progression[uid]
+                        val userBook = if (existingInGroup != null && existingInGroup.title == pub.metadata.title && existingInGroup.author == (pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author")) {
+                            existingInGroup
+                        } else {
+                            BookModel(
+                                title = pub.metadata.title ?: "",
+                                author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
+                            )
+                        }
+                        progression[uid] = userBook.copy(progress = progressionJson)
+                        
+                        if (groupBookDoc.exists()) {
+                            groupBookRef.update("bookProgression", progression).await()
+                        } else {
+                            groupBookRef.set(GroupBook(groupCode = activeGroupId, bookProgression = progression)).await()
+                        }
+                    } else {
+                        val books = userModel.books.toMutableMap()
+                        if (books.containsKey(bookKey)) {
+                            val updatedBook = books[bookKey]!!.copy(progress = progressionJson)
+                            books[bookKey] = updatedBook
+                            userRef.update("books", books).await()
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -141,16 +175,24 @@ class ReaderViewModel(
                 return@launch
             }
 
-            // If it's a different book, clear state immediately
-            if (activeBook.id != loadedBookId) {
-                Log.d("ReaderViewModel", "Switching from $loadedBookId to ${activeBook.id}")
+            // Fetch user model to check current active group
+            val uid = auth.currentUser?.uid
+            val userDoc = if (uid != null) firestore.collection("users").document(uid).get().await() else null
+            val userModel = userDoc?.toObject(UserModel::class.java)
+            val currentActiveGroupId = userModel?.activeGroup ?: "none"
+
+            // If it's a different book OR the active group has changed, clear state immediately
+            if (activeBook.id != loadedBookId || currentActiveGroupId != loadedGroupId) {
+                Log.d("ReaderViewModel", "Switching book/group: book ${loadedBookId}->${activeBook.id}, group ${loadedGroupId}->${currentActiveGroupId}")
                 _publication.value = null
                 _isBookReady.value = false
                 hasEverLoaded = false
                 _progress.value = ReadingProgress()
                 _initialLocator.value = null
+                _highlights.value = emptyList()
+                loadedGroupId = currentActiveGroupId
             } else if (_publication.value != null) {
-                Log.d("ReaderViewModel", "Book ${activeBook.id} already loaded, skipping")
+                Log.d("ReaderViewModel", "Book ${activeBook.id} already loaded in group $currentActiveGroupId, skipping")
                 return@launch
             }
 
@@ -158,24 +200,145 @@ class ReaderViewModel(
             Log.d("ReaderViewModel", "Book file path: ${activeBook.filePath}, exists: ${bookFile.exists()}")
             if (bookFile.exists()) {
                 loadedBookId = activeBook.id
-                
+
                 // Fetch progress from Firestore
-                val uid = auth.currentUser?.uid
                 var progressFromFirestore: String? = null
                 if (uid != null) {
                     try {
                         val bookKey = "${activeBook.title}_${activeBook.author}"
-                        val userDoc = firestore.collection("users").document(uid).get().await()
-                        val userModel = userDoc.toObject(UserModel::class.java)
-                        progressFromFirestore = userModel?.books?.get(bookKey)?.progress
+                        
+                        if (currentActiveGroupId != "none") {
+                            val groupBookDoc = firestore.collection("groupBooks").document(currentActiveGroupId).get().await()
+                            val groupBook = groupBookDoc.toObject(GroupBook::class.java)
+                            val userBookInGroup = groupBook?.bookProgression?.get(uid)
+                            // Only use group progress if it's for the same book
+                            if (userBookInGroup?.title == activeBook.title && userBookInGroup.author == activeBook.author) {
+                                progressFromFirestore = userBookInGroup.progress
+                            }
+                        } else {
+                            progressFromFirestore = userModel?.books?.get(bookKey)?.progress
+                        }
                     } catch (e: Exception) {
                         Log.e("ReaderViewModel", "Failed to fetch Firestore progress", e)
                     }
                 }
-                
-                openBook(bookFile, progression = progressFromFirestore ?: activeBook.progression)
+
+                val progressionToUse = if (!progressFromFirestore.isNullOrBlank()) {
+                    progressFromFirestore
+                } else if (!activeBook.progression.isNullOrBlank()) {
+                    activeBook.progression
+                } else {
+                    null
+                }
+
+                openBook(bookFile, progression = progressionToUse)
+
+                // Load highlights
+                val highlightsList = mutableListOf<Locator>()
+                if (uid != null) {
+                    try {
+                        val bookKey = "${activeBook.title}_${activeBook.author}"
+                        if (currentActiveGroupId != "none") {
+                            Log.d("ReaderViewModel", "Loading user highlights from group: $currentActiveGroupId")
+                            val groupBookDoc = firestore.collection("groupBooks").document(currentActiveGroupId).get().await()
+                            if (groupBookDoc.exists()) {
+                                val groupBook = groupBookDoc.toObject(GroupBook::class.java)
+                                val userBookInGroup = groupBook?.bookProgression?.get(uid)
+                                
+                                // Only load highlights if they belong to the current book
+                                if (userBookInGroup?.title == activeBook.title && userBookInGroup.author == activeBook.author) {
+                                    userBookInGroup.highlights.forEach { json ->
+                                        try {
+                                            Locator.fromJSON(org.json.JSONObject(json))?.let {
+                                                highlightsList.add(it)
+                                            }
+                                        } catch (e: Exception) {}
+                                    }
+                                } else {
+                                    Log.d("ReaderViewModel", "Group book model mismatch: ${userBookInGroup?.title} vs ${activeBook.title}")
+                                }
+                            }
+                        } else {
+                            Log.d("ReaderViewModel", "No active group, loading personal highlights for: $bookKey")
+                            userModel?.books?.get(bookKey)?.highlights?.forEach { json ->
+                                try {
+                                    Locator.fromJSON(org.json.JSONObject(json))?.let {
+                                        highlightsList.add(it)
+                                    }
+                                } catch (e: Exception) {}
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("ReaderViewModel", "Failed to load highlights", e)
+                    }
+                }
+                _highlights.value = highlightsList
+                Log.d("ReaderViewModel", "Total highlights loaded to state: ${highlightsList.size}")
             } else {
                 _error.value = "Book file not found at ${activeBook.filePath}"
+            }
+        }
+    }
+
+    fun addHighlight(locator: Locator) {
+        val pub = _publication.value ?: return
+        val uid = auth.currentUser?.uid ?: return
+        val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
+        val locatorJson = locator.toJSON().toString()
+
+        _highlights.value = _highlights.value + locator
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val userRef = firestore.collection("users").document(uid)
+                val userDoc = userRef.get().await()
+                if (userDoc.exists()) {
+                    val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
+                    val activeGroupId = userModel.activeGroup
+
+                    if (activeGroupId != null) {
+                        val groupBookRef = firestore.collection("groupBooks").document(activeGroupId)
+                        val groupBookDoc = groupBookRef.get().await()
+                        
+                        val progression = if (groupBookDoc.exists()) {
+                            groupBookDoc.toObject(GroupBook::class.java)?.bookProgression?.toMutableMap() ?: mutableMapOf()
+                        } else {
+                            mutableMapOf()
+                        }
+
+                        val existingInGroup = progression[uid]
+                        val userBook = if (existingInGroup != null && existingInGroup.title == pub.metadata.title && existingInGroup.author == (pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author")) {
+                            existingInGroup
+                        } else {
+                            BookModel(
+                                title = pub.metadata.title ?: "",
+                                author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
+                            )
+                        }
+
+                        val currentHighlights = userBook.highlights.toMutableList()
+                        currentHighlights.add(locatorJson)
+                        progression[uid] = userBook.copy(highlights = currentHighlights)
+                        
+                        if (groupBookDoc.exists()) {
+                            groupBookRef.update("bookProgression", progression).await()
+                        } else {
+                            groupBookRef.set(GroupBook(groupCode = activeGroupId, bookProgression = progression)).await()
+                        }
+                    } else {
+                        val books = userModel.books.toMutableMap()
+                        val userBook = books[bookKey] ?: BookModel(
+                            title = pub.metadata.title ?: "",
+                            author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
+                        )
+                        val currentHighlights = userBook.highlights.toMutableList()
+                        currentHighlights.add(locatorJson)
+                        books[bookKey] = userBook.copy(highlights = currentHighlights)
+                        userRef.update("books", books).await()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ReaderViewModel", "Failed to add highlight to Firestore", e)
             }
         }
     }
@@ -192,7 +355,7 @@ class ReaderViewModel(
                     
                     val locator = if (progression != null) {
                         try {
-                            org.readium.r2.shared.publication.Locator.fromJSON(org.json.JSONObject(progression))
+                            Locator.fromJSON(org.json.JSONObject(progression))
                         } catch (e: Exception) {
                             Log.e("ReaderViewModel", "Failed to parse initial progression JSON", e)
                             null

@@ -610,7 +610,7 @@ fun MoreMenu(modifier: Modifier, toggle: () -> Unit){
                             val author = publication.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
                             val bookKey = "${title}_${author}"
                             val firebaseBook = user?.books?.get(bookKey)
-                            val progress = firebaseBook?.progress ?: "0"
+                            val progress = firebaseBook?.progress ?: ""
 
                             val existingBook = database.bookDao().findByTitleAndAuthor(title, author)
 
