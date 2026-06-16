@@ -417,6 +417,11 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         )
     }
 
+    override fun onPause() {
+        super.onPause()
+        viewModel.saveProgressionToFirestore()
+    }
+
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
@@ -596,7 +601,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
         // Only run this once per "open" to avoid infinite loops during page turns
         if (hasInitialRecalculationDone) return
-        
+
         val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
         val preferences = currentPreferences
         

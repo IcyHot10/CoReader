@@ -114,7 +114,8 @@ class ReaderViewModel(
         val pub = _publication.value ?: return
         val locator = lastLocator ?: return
         val uid = auth.currentUser?.uid ?: return
-        val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
+        val authorName = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
+        val bookKey = "${pub.metadata.title}_$authorName"
         val progressionJson = locator.toJSON().toString()
 
         CoroutineScope(Dispatchers.IO).launch {
@@ -125,43 +126,46 @@ class ReaderViewModel(
                     val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
                     val activeGroupId = userModel.activeGroup
 
+                    // Always update personal progress in UserModel
+                    val userBooks = userModel.books.toMutableMap()
+                    val userBook = userBooks[bookKey] ?: BookModel(
+                        title = pub.metadata.title ?: "",
+                        author = authorName
+                    )
+                    userBooks[bookKey] = userBook.copy(progress = progressionJson)
+                    userRef.update("books", userBooks).await()
+
+                    // If in an active group, also update the group's progress model
                     if (activeGroupId != null) {
                         val groupBookRef = firestore.collection("groupBooks").document(activeGroupId)
                         val groupBookDoc = groupBookRef.get().await()
-                        
-                        val progression = if (groupBookDoc.exists()) {
+
+                        val groupProgression = if (groupBookDoc.exists()) {
                             groupBookDoc.toObject(GroupBook::class.java)?.bookProgression?.toMutableMap() ?: mutableMapOf()
                         } else {
                             mutableMapOf()
                         }
-                        
-                        val existingInGroup = progression[uid]
-                        val userBook = if (existingInGroup != null && existingInGroup.title == pub.metadata.title && existingInGroup.author == (pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author")) {
+
+                        val existingInGroup = groupProgression[uid]
+                        val groupUserBook = if (existingInGroup != null && existingInGroup.title == pub.metadata.title && existingInGroup.author == authorName) {
                             existingInGroup
                         } else {
                             BookModel(
                                 title = pub.metadata.title ?: "",
-                                author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
+                                author = authorName
                             )
                         }
-                        progression[uid] = userBook.copy(progress = progressionJson)
-                        
+                        groupProgression[uid] = groupUserBook.copy(progress = progressionJson)
+
                         if (groupBookDoc.exists()) {
-                            groupBookRef.update("bookProgression", progression).await()
+                            groupBookRef.update("bookProgression", groupProgression).await()
                         } else {
-                            groupBookRef.set(GroupBook(groupCode = activeGroupId, bookProgression = progression)).await()
-                        }
-                    } else {
-                        val books = userModel.books.toMutableMap()
-                        if (books.containsKey(bookKey)) {
-                            val updatedBook = books[bookKey]!!.copy(progress = progressionJson)
-                            books[bookKey] = updatedBook
-                            userRef.update("books", books).await()
+                            groupBookRef.set(GroupBook(groupCode = activeGroupId, bookProgression = groupProgression)).await()
                         }
                     }
                 }
             } catch (e: Exception) {
-                Log.e("ReaderViewModel", "Failed to update Firestore progress on leave", e)
+                Log.e("ReaderViewModel", "Failed to update Firestore progress", e)
             }
         }
     }
@@ -215,16 +219,17 @@ class ReaderViewModel(
                     try {
                         val bookKey = "${activeBook.title}_${activeBook.author}"
                         
-                        if (currentActiveGroupId != "none") {
+                        // First check personal progression (now always updated)
+                        progressFromFirestore = userModel?.books?.get(bookKey)?.progress
+                        
+                        // Fallback to group progression if personal is missing and we are in a group
+                        if (progressFromFirestore.isNullOrBlank() && currentActiveGroupId != "none") {
                             val groupBookDoc = firestore.collection("groupBooks").document(currentActiveGroupId).get().await()
                             val groupBook = groupBookDoc.toObject(GroupBook::class.java)
                             val userBookInGroup = groupBook?.bookProgression?.get(uid)
-                            // Only use group progress if it's for the same book
                             if (userBookInGroup?.title == activeBook.title && userBookInGroup.author == activeBook.author) {
                                 progressFromFirestore = userBookInGroup.progress
                             }
-                        } else {
-                            progressFromFirestore = userModel?.books?.get(bookKey)?.progress
                         }
                     } catch (e: Exception) {
                         Log.e("ReaderViewModel", "Failed to fetch Firestore progress", e)
