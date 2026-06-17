@@ -59,8 +59,27 @@ class ReaderViewModel(
 
     data class HighlightData(
         val locator: Locator,
-        val userId: String
+        val userId: String,
+        val color: Int = 0x66FFFF00
     )
+
+    private val _selectedHighlightColor = MutableStateFlow(0x66FFFF00)
+    val selectedHighlightColor: StateFlow<Int> = _selectedHighlightColor
+
+    fun setSelectedHighlightColor(color: Int) {
+        _selectedHighlightColor.value = color
+        
+        // Save to Firestore
+        val uid = auth.currentUser?.uid ?: return
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                firestore.collection("users").document(uid)
+                    .update("lastHighlightColor", color).await()
+            } catch (e: Exception) {
+                Log.e("ReaderViewModel", "Failed to save lastHighlightColor", e)
+            }
+        }
+    }
 
     private val _highlights = MutableStateFlow<List<HighlightData>>(emptyList())
     val highlights: StateFlow<List<HighlightData>> = _highlights
@@ -193,6 +212,11 @@ class ReaderViewModel(
             val userModel = userDoc?.toObject(UserModel::class.java)
             val currentActiveGroupId = userModel?.activeGroup ?: "none"
 
+            // Set the last used color from user profile if available
+            userModel?.lastHighlightColor?.let {
+                _selectedHighlightColor.value = it
+            }
+
             // If it's a different book OR the active group has changed, clear state immediately
             if (activeBook.id != loadedBookId || currentActiveGroupId != loadedGroupId) {
                 Log.d("ReaderViewModel", "Switching book/group: book ${loadedBookId}->${activeBook.id}, group ${loadedGroupId}->${currentActiveGroupId}")
@@ -267,6 +291,7 @@ class ReaderViewModel(
                                                 val obj = org.json.JSONObject(entryJson)
                                                 val locJson = obj.optJSONObject("locator")
                                                 val hUserId = obj.optString("userId", memberId)
+                                                val hColor = obj.optInt("color", 0x66FFFF00)
                                                 val locator = if (locJson != null) {
                                                     Locator.fromJSON(locJson)
                                                 } else {
@@ -274,7 +299,7 @@ class ReaderViewModel(
                                                     Locator.fromJSON(obj)
                                                 }
                                                 if (locator != null) {
-                                                    highlightsList.add(HighlightData(locator, hUserId))
+                                                    highlightsList.add(HighlightData(locator, hUserId, hColor))
                                                     userIdsToFetch.add(hUserId)
                                                 }
                                             } catch (e: Exception) {}
@@ -290,13 +315,14 @@ class ReaderViewModel(
                                     val obj = org.json.JSONObject(entryJson)
                                     val locJson = obj.optJSONObject("locator")
                                     val hUserId = obj.optString("userId", uid)
+                                    val hColor = obj.optInt("color", 0x66FFFF00)
                                     val locator = if (locJson != null) {
                                         Locator.fromJSON(locJson)
                                     } else {
                                         Locator.fromJSON(obj)
                                     }
                                     if (locator != null) {
-                                        highlightsList.add(HighlightData(locator, hUserId))
+                                        highlightsList.add(HighlightData(locator, hUserId, hColor))
                                         userIdsToFetch.add(hUserId)
                                     }
                                 } catch (e: Exception) {}
@@ -343,9 +369,11 @@ class ReaderViewModel(
                     val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
                     val activeGroupId = userModel.activeGroup
 
+                    val highlightColor = _selectedHighlightColor.value
                     val highlightEntry = org.json.JSONObject().apply {
                         put("locator", locator.toJSON())
                         put("userId", uid)
+                        put("color", highlightColor)
                     }.toString()
 
                     // Optimistically update local state
@@ -354,7 +382,7 @@ class ReaderViewModel(
                         nameMap[uid] = userModel.username
                         _usernames.value = nameMap
                     }
-                    _highlights.value = _highlights.value + HighlightData(locator, uid)
+                    _highlights.value = _highlights.value + HighlightData(locator, uid, highlightColor)
 
                     if (activeGroupId != null) {
                         val groupBookRef = firestore.collection("groupBooks").document(activeGroupId)

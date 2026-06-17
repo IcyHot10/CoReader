@@ -5,5 +5,6 @@ data class UserModel(
     val email : String = "",
     val groupIDs : List<String> = emptyList(),
     val activeGroup : String? = null,
+    val lastHighlightColor: Int = 0x66FFFF00,
     val books : Map<String, BookModel> = emptyMap()
 )

@@ -11,10 +11,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
@@ -324,6 +326,40 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                         color = colorScheme.secondary,
                                         trackColor = colorScheme.secondary.copy(alpha = 0.2f),
                                     )
+
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        val highlightColors = listOf(
+                                            0x66FFFF00, // Yellow
+                                            0x6600FF00, // Green
+                                            0x6600FFFF, // Cyan
+                                            0x66FF00FF, // Pink
+                                            0x66FF0000  // Red
+                                        )
+                                        val selectedColor by viewModel.selectedHighlightColor.collectAsState()
+
+                                        highlightColors.forEach { color ->
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(40.dp)
+                                                    .padding(4.dp)
+                                                    .background(
+                                                        color = androidx.compose.ui.graphics.Color(color).copy(alpha = 1f),
+                                                        shape = CircleShape
+                                                    )
+                                                    .clickable { viewModel.setSelectedHighlightColor(color) }
+                                                    .then(
+                                                        if (selectedColor == color) {
+                                                            Modifier.border(2.dp, colorScheme.secondary, CircleShape)
+                                                        } else Modifier
+                                                    )
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -528,7 +564,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             Decoration(
                 id = "highlight-$index",
                 locator = data.locator,
-                style = Decoration.Style.Highlight(tint = 0x66FFFF00, isActive = true),
+                style = Decoration.Style.Highlight(tint = data.color, isActive = true),
                 extras = mapOf("userId" to data.userId)
             )
         }
