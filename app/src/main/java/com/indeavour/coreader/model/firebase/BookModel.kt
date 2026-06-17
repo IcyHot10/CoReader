@@ -5,5 +5,6 @@ data class BookModel(
     val author: String = "",
     val progress: String = "",
     val highlights: List<String> = emptyList(),
+    val notes: List<String> = emptyList(),
     val isDeleted: Boolean = false
 )

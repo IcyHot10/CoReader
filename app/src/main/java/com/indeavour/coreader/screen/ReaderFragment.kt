@@ -133,9 +133,10 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         }
 
         val highlights by viewModel.highlights.collectAsState()
-        LaunchedEffect(highlights, isBookReady) {
+        val notes by viewModel.notes.collectAsState()
+        LaunchedEffect(highlights, notes, isBookReady) {
             if (isBookReady) {
-                applyHighlights(highlights)
+                applyAnnotations(highlights, notes)
             }
         }
         
@@ -508,22 +509,36 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             selectionActionModeCallback = object : android.view.ActionMode.Callback {
                 override fun onCreateActionMode(mode: android.view.ActionMode, menu: android.view.Menu): Boolean {
                     menu.add(0, 1001, 0, "Highlight")
+                    menu.add(0, 1002, 0, "Note")
                     return true
                 }
 
                 override fun onPrepareActionMode(mode: android.view.ActionMode, menu: android.view.Menu): Boolean = false
 
                 override fun onActionItemClicked(mode: android.view.ActionMode, item: android.view.MenuItem): Boolean {
-                    if (item.itemId == 1001) {
-                        val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
-                        navigator?.lifecycleScope?.launch {
-                            val selection = navigator.currentSelection()
-                            selection?.locator?.let {
-                                viewModel.addHighlight(it)
+                    when (item.itemId) {
+                        1001 -> {
+                            val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+                            navigator?.lifecycleScope?.launch {
+                                val selection = navigator.currentSelection()
+                                selection?.locator?.let {
+                                    viewModel.addHighlight(it)
+                                }
+                                mode.finish()
                             }
-                            mode.finish()
+                            return true
                         }
-                        return true
+                        1002 -> {
+                            val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+                            navigator?.lifecycleScope?.launch {
+                                val selection = navigator.currentSelection()
+                                selection?.locator?.let { locator ->
+                                    showNoteInputDialog(locator)
+                                }
+                                mode.finish()
+                            }
+                            return true
+                        }
                     }
                     return false
                 }
@@ -557,28 +572,66 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         transaction.commit()
     }
 
-    private fun applyHighlights(highlights: List<ReaderViewModel.HighlightData>) {
+    private fun showNoteInputDialog(locator: Locator) {
+        val builder = android.app.AlertDialog.Builder(requireContext())
+        builder.setTitle("Add Note")
+
+        val input = android.widget.EditText(requireContext())
+        input.inputType = android.text.InputType.TYPE_CLASS_TEXT
+        builder.setView(input)
+
+        builder.setPositiveButton("Save") { _, _ ->
+            val noteText = input.text.toString()
+            if (noteText.isNotBlank()) {
+                viewModel.addNote(locator, noteText)
+            }
+        }
+        builder.setNegativeButton("Cancel") { dialog, _ -> dialog.cancel() }
+
+        builder.show()
+    }
+
+    private fun applyAnnotations(highlights: List<ReaderViewModel.HighlightData>, notes: List<ReaderViewModel.NoteData>) {
         val navigator = childFragmentManager.findFragmentByTag("navigator") as? DecorableNavigator ?: return
-        Log.d("ReaderFragment", "Applying ${highlights.size} highlights")
-        val decorations = highlights.mapIndexed { index, data ->
+        Log.d("ReaderFragment", "Applying ${highlights.size} highlights and ${notes.size} notes")
+        
+        val highlightDecorations = highlights.mapIndexed { index, data ->
             Decoration(
                 id = "highlight-$index",
                 locator = data.locator,
-                style = Decoration.Style.Highlight(tint = data.color, isActive = true),
-                extras = mapOf("userId" to data.userId)
+                style = Decoration.Style.Highlight(tint = data.color, isActive = false),
+                extras = mapOf("userId" to data.userId, "type" to "highlight")
             )
         }
+
+        val noteDecorations = notes.mapIndexed { index, data ->
+            Decoration(
+                id = "note-$index",
+                locator = data.locator,
+                style = Decoration.Style.Highlight(tint = data.color, isActive = true),
+                extras = mapOf("userId" to data.userId, "type" to "note", "content" to data.content)
+            )
+        }
+
         lifecycleScope.launch {
-            navigator.applyDecorations(decorations, "highlights")
+            navigator.applyDecorations(highlightDecorations + noteDecorations, "highlights")
         }
     }
 
     override fun onDecorationActivated(event: DecorableNavigator.OnActivatedEvent): Boolean {
         if (event.group == "highlights") {
             val userId = event.decoration.extras["userId"] as? String
+            val type = event.decoration.extras["type"] as? String
+            val content = event.decoration.extras["content"] as? String
+            
             if (userId != null) {
                 val username = viewModel.usernames.value[userId] ?: "Unknown User"
-                android.widget.Toast.makeText(requireContext(), "Highlighted by: $username", android.widget.Toast.LENGTH_SHORT).show()
+                val message = if (type == "note" && content != null) {
+                    "$username's Note: $content"
+                } else {
+                    "Highlighted by: $username"
+                }
+                android.widget.Toast.makeText(requireContext(), message, android.widget.Toast.LENGTH_LONG).show()
                 return true
             }
         }
@@ -632,8 +685,8 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         
         Log.d("ReaderFragment", "onPageLoaded called. hasInitialRecalculationDone: $hasInitialRecalculationDone")
 
-        // Re-apply highlights whenever a page is loaded to ensure they are visible
-        applyHighlights(viewModel.highlights.value)
+        // Re-apply annotations whenever a page is loaded to ensure they are visible
+        applyAnnotations(viewModel.highlights.value, viewModel.notes.value)
 
         // Only run this once per "open" to avoid infinite loops during page turns
         if (hasInitialRecalculationDone) return
