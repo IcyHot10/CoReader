@@ -19,6 +19,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -119,9 +121,58 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         val progress by viewModel.progress.collectAsState()
         val isBookReady by viewModel.isBookReady.collectAsState()
         var isInterfaceVisible by remember { mutableStateOf(false) }
+        var isColorPickerExpanded by remember { mutableStateOf(false) }
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
         var isContainerReady by remember { mutableStateOf(false) }
+
+        var noteLocator by remember { mutableStateOf<Locator?>(null) }
+        LaunchedEffect(Unit) {
+            onShowNoteDialog = { locator ->
+                noteLocator = locator
+            }
+        }
+
+        if (noteLocator != null) {
+            var noteText by remember { mutableStateOf("") }
+            AlertDialog(
+                onDismissRequest = { noteLocator = null },
+                title = { Text("Add Note", color = MaterialTheme.colorScheme.secondary) },
+                text = {
+                    TextField(
+                        value = noteText,
+                        onValueChange = { noteText = it },
+                        placeholder = { Text("Enter your note...") },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surface,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                            focusedIndicatorColor = Teal,
+                            cursorColor = Teal
+                        )
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (noteText.isNotBlank()) {
+                                viewModel.addNote(noteLocator!!, noteText)
+                            }
+                            noteLocator = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Teal)
+                    ) {
+                        Text("Save", color = MaterialTheme.colorScheme.secondary)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { noteLocator = null }) {
+                        Text("Cancel", color = Teal)
+                    }
+                },
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        }
 
         val colorScheme = MaterialTheme.colorScheme
         
@@ -328,37 +379,64 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                         trackColor = colorScheme.secondary.copy(alpha = 0.2f),
                                     )
 
-                                    Spacer(modifier = Modifier.height(16.dp))
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.Center,
-                                        verticalAlignment = Alignment.CenterVertically
+                                        horizontalArrangement = Arrangement.Center
                                     ) {
-                                        val highlightColors = listOf(
-                                            0x66FFFF00, // Yellow
-                                            0x6600FF00, // Green
-                                            0x6600FFFF, // Cyan
-                                            0x66FF00FF, // Pink
-                                            0x66FF0000  // Red
-                                        )
-                                        val selectedColor by viewModel.selectedHighlightColor.collectAsState()
-
-                                        highlightColors.forEach { color ->
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(40.dp)
-                                                    .padding(4.dp)
-                                                    .background(
-                                                        color = androidx.compose.ui.graphics.Color(color).copy(alpha = 1f),
-                                                        shape = CircleShape
-                                                    )
-                                                    .clickable { viewModel.setSelectedHighlightColor(color) }
-                                                    .then(
-                                                        if (selectedColor == color) {
-                                                            Modifier.border(2.dp, colorScheme.secondary, CircleShape)
-                                                        } else Modifier
-                                                    )
+                                        IconButton(onClick = { isColorPickerExpanded = !isColorPickerExpanded }) {
+                                            Icon(
+                                                imageVector = if (isColorPickerExpanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
+                                                contentDescription = "Toggle Color Picker",
+                                                tint = colorScheme.secondary
                                             )
+                                        }
+                                    }
+
+                                    AnimatedVisibility(visible = isColorPickerExpanded) {
+                                        Column {
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.Center,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                val highlightColors = listOf(
+                                                    0x66FFFF00, // Yellow
+                                                    0x6600FF00, // Green
+                                                    0x6600FFFF, // Cyan
+                                                    0x66FF00FF, // Pink
+                                                    0x66FF0000  // Red
+                                                )
+                                                val selectedColor by viewModel.selectedHighlightColor.collectAsState()
+
+                                                highlightColors.forEach { color ->
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(40.dp)
+                                                            .padding(4.dp)
+                                                            .background(
+                                                                color = androidx.compose.ui.graphics.Color(color)
+                                                                    .copy(alpha = 1f),
+                                                                shape = CircleShape
+                                                            )
+                                                            .clickable {
+                                                                viewModel.setSelectedHighlightColor(
+                                                                    color
+                                                                )
+                                                            }
+                                                            .then(
+                                                                if (selectedColor == color) {
+                                                                    Modifier.border(
+                                                                        2.dp,
+                                                                        colorScheme.secondary,
+                                                                        CircleShape
+                                                                    )
+                                                                } else Modifier
+                                                            )
+                                                    )
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(8.dp))
                                         }
                                     }
                                 }
@@ -472,6 +550,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     }
 
     private var onToggleInterface: (() -> Unit)? = null
+    private var onShowNoteDialog: ((Locator) -> Unit)? = null
 
     private fun showPublication(
         publication: Publication,
@@ -573,22 +652,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     }
 
     private fun showNoteInputDialog(locator: Locator) {
-        val builder = android.app.AlertDialog.Builder(requireContext())
-        builder.setTitle("Add Note")
-
-        val input = android.widget.EditText(requireContext())
-        input.inputType = android.text.InputType.TYPE_CLASS_TEXT
-        builder.setView(input)
-
-        builder.setPositiveButton("Save") { _, _ ->
-            val noteText = input.text.toString()
-            if (noteText.isNotBlank()) {
-                viewModel.addNote(locator, noteText)
-            }
-        }
-        builder.setNegativeButton("Cancel") { dialog, _ -> dialog.cancel() }
-
-        builder.show()
+        onShowNoteDialog?.invoke(locator)
     }
 
     private fun applyAnnotations(highlights: List<ReaderViewModel.HighlightData>, notes: List<ReaderViewModel.NoteData>) {
