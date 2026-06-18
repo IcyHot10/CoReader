@@ -78,6 +78,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.LaunchedEffect
@@ -128,7 +130,7 @@ import kotlin.coroutines.CoroutineContext
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGroup: () -> Unit){
+fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit){
     val context = LocalContext.current
     val database by lazy { AppRoomDatabase.getDatabase(context = context) }
     val scope = rememberCoroutineScope()
@@ -178,7 +180,7 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                 modifier = Modifier.width(325.dp),
                 drawerContainerColor = MaterialTheme.colorScheme.primaryContainer
             ) {
-                SideMenuContent(user, userViewModel, routeToLogin, routeToGroup)
+                SideMenuContent(user, userViewModel, routeToLogin, routeToGroup, routeToProgress)
             }
         }
     ) {
@@ -449,7 +451,7 @@ fun BookCard(
 }
 
 @Composable
-fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin: () -> Unit, routeToGroup: () -> Unit){
+fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit){
     val auth = FirebaseAuth.getInstance()
     val context = LocalContext.current
     var showEditDialog by remember { mutableStateOf(false) }
@@ -458,33 +460,44 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
     if (showEditDialog) {
         AlertDialog(
             onDismissRequest = { showEditDialog = false },
-            title = { Text("Update Username") },
+            title = { Text("Update Username", color = MaterialTheme.colorScheme.secondary) },
             text = {
                 TextField(
                     value = newUsername,
                     onValueChange = { newUsername = it },
                     label = { Text("New Username") },
-                    singleLine = true
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                        focusedIndicatorColor = Teal,
+                        cursorColor = Teal
+                    )
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    userViewModel.updateUsername(newUsername) { success ->
-                        if (success) {
-                            showEditDialog = false
-                        } else {
-                            AppUtils.showToast(context, "Failed to update username")
+                Button(
+                    onClick = {
+                        userViewModel.updateUsername(newUsername) { success ->
+                            if (success) {
+                                showEditDialog = false
+                            } else {
+                                AppUtils.showToast(context, "Failed to update username")
+                            }
                         }
-                    }
-                }) {
-                    Text("Update")
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal)
+                ) {
+                    Text("Update", color = MaterialTheme.colorScheme.secondary)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showEditDialog = false }) {
-                    Text("Cancel")
+                    Text("Cancel", color = Teal)
                 }
-            }
+            },
+            containerColor = MaterialTheme.colorScheme.surface
         )
     }
 
@@ -523,7 +536,7 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
             Image(painter = painterResource(R.drawable.library_image), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth())
             val textButtonModifier = Modifier.fillMaxWidth().height(50.dp).align(Alignment.CenterHorizontally)
             Button(onClick = routeToGroup, modifier = textButtonModifier, shape = RectangleShape) { Text("Manage Group", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
-            Button(onClick = {}, modifier = textButtonModifier, shape = RectangleShape) { Text("View Group Book Progress", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
+            Button(onClick = routeToProgress, modifier = textButtonModifier, shape = RectangleShape) { Text("View Group Book Progress", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
             Button(onClick = {}, modifier = textButtonModifier, shape = RectangleShape) { Text("View To Read List", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()){
@@ -667,5 +680,5 @@ fun MoreMenu(modifier: Modifier, toggle: () -> Unit){
 @Preview
 @Composable
 fun LibraryScreenPreview(){
-    LibraryScreen({}, {}, {})
+    LibraryScreen({}, {}, {}, {})
 }

@@ -11,6 +11,7 @@ import androidx.navigation.compose.rememberNavController
 import com.google.firebase.auth.FirebaseAuth
 import com.indeavour.coreader.screen.BookScreen
 import com.indeavour.coreader.screen.GroupScreen
+import com.indeavour.coreader.screen.GroupProgressScreen
 import com.indeavour.coreader.screen.LibraryScreen
 import com.indeavour.coreader.screen.LoginScreen
 import com.indeavour.coreader.ui.theme.CoReaderTheme
@@ -48,11 +49,15 @@ fun AppNavigation(){
                     }
                 },
                 routeToBook = { navController.navigate("book") },
-                routeToGroup = { navController.navigate("group") }
+                routeToGroup = { navController.navigate("group") },
+                routeToProgress = { navController.navigate("progress") }
             )
         }
         composable("group") {
             GroupScreen(onBack = { navController.popBackStack() })
+        }
+        composable("progress") {
+            GroupProgressScreen(onBack = { navController.popBackStack() })
         }
         composable("book") {
             BookScreen(routeToLibrary = {

@@ -28,6 +28,9 @@ class GroupViewModel : ViewModel() {
     private val _groupBooks = MutableStateFlow<Map<String, GroupBook>>(emptyMap())
     val groupBooks: StateFlow<Map<String, GroupBook>> = _groupBooks
 
+    private val _usernames = MutableStateFlow<Map<String, String>>(emptyMap())
+    val usernames: StateFlow<Map<String, String>> = _usernames
+
     private var groupBooksListener: ListenerRegistration? = null
 
     init {
@@ -46,9 +49,11 @@ class GroupViewModel : ViewModel() {
                     _activeGroupId.value = newActiveGroupId
                     if (newActiveGroupId != null) {
                         listenToGroupBooks(newActiveGroupId)
+                        fetchGroupUsernames(newActiveGroupId)
                     } else {
                         groupBooksListener?.remove()
                         _groupBooks.value = emptyMap()
+                        _usernames.value = emptyMap()
                     }
                 }
                 
@@ -78,12 +83,54 @@ class GroupViewModel : ViewModel() {
         groupBooksListener?.remove()
         groupBooksListener = firestore.collection("groupBooks").document(groupCode)
             .addSnapshotListener { snapshot, error ->
-                if (error != null) return@addSnapshotListener
+                if (error != null) {
+                    _groupBooks.value = emptyMap()
+                    return@addSnapshotListener
+                }
+                
                 val gb = snapshot?.toObject(GroupBook::class.java)
-                val books = gb?.bookProgression?.values?.associateBy { "${it.title}_${it.author}" }
-                    ?.mapValues { gb } ?: emptyMap()
-                _groupBooks.value = books
+                if (gb == null || gb.bookProgression.isEmpty()) {
+                    _groupBooks.value = emptyMap()
+                    return@addSnapshotListener
+                }
+
+                // Create a map where key is "Title_Author" and value is the GroupBook itself
+                // This identifies all unique books being read in the group
+                val uniqueBooks = gb.bookProgression.values
+                    .filter { it.title.isNotBlank() }
+                    .associateBy { "${it.title}_${it.author}" }
+                    .mapValues { gb }
+                
+                _groupBooks.value = uniqueBooks
             }
+    }
+
+    private fun fetchGroupUsernames(groupCode: String) {
+        viewModelScope.launch {
+            try {
+                // Listen to the group document to get member IDs in real-time
+                firestore.collection("groups").document(groupCode)
+                    .addSnapshotListener { snapshot, _ ->
+                        val group = snapshot?.toObject(GroupModel::class.java) ?: return@addSnapshotListener
+                        
+                        group.groupMembers.keys.forEach { userId ->
+                            if (!_usernames.value.containsKey(userId)) {
+                                viewModelScope.launch {
+                                    try {
+                                        val userDoc = firestore.collection("users").document(userId).get().await()
+                                        val name = userDoc.getString("username") ?: "Unknown"
+                                        val updatedMap = _usernames.value.toMutableMap()
+                                        updatedMap[userId] = name
+                                        _usernames.value = updatedMap
+                                    } catch (e: Exception) {}
+                                }
+                            }
+                        }
+                    }
+            } catch (e: Exception) {
+                // Log error
+            }
+        }
     }
 
     fun uploadBookToGroup(book: BookModel, onResult: (Boolean) -> Unit) {
