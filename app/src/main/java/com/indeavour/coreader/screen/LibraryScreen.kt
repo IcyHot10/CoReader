@@ -77,11 +77,16 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -534,45 +539,70 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
                 }
             }
             Image(painter = painterResource(R.drawable.library_image), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth())
-            val textButtonModifier = Modifier.fillMaxWidth().height(50.dp).align(Alignment.CenterHorizontally)
-            Button(onClick = routeToGroup, modifier = textButtonModifier, shape = RectangleShape) { Text("Manage Group", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
-            Button(onClick = routeToProgress, modifier = textButtonModifier, shape = RectangleShape) { Text("View Group Book Progress", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
-            Button(onClick = {}, modifier = textButtonModifier, shape = RectangleShape) { Text("View To Read List", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+
+            NavigationDrawerItem(
+                label = { Text("Manage Group") },
+                selected = false,
+                onClick = routeToGroup,
+                icon = { Icon(Icons.Default.Group, contentDescription = null) },
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                colors = NavigationDrawerItemDefaults.colors(
+                    unselectedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                )
+            )
+
+            NavigationDrawerItem(
+                label = { Text("View Group Book Progress") },
+                selected = false,
+                onClick = routeToProgress,
+                icon = { Icon(Icons.Default.BarChart, contentDescription = null) },
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                colors = NavigationDrawerItemDefaults.colors(
+                    unselectedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                )
+            )
+
+            NavigationDrawerItem(
+                label = { Text("View To Read List") },
+                selected = false,
+                onClick = {},
+                icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                colors = NavigationDrawerItemDefaults.colors(
+                    unselectedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                )
+            )
         }
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()){
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = {
+
+        Column(modifier = Modifier.padding(bottom = 16.dp)) {
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 8.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
+            )
+
+            NavigationDrawerItem(
+                label = { Text("Logout") },
+                selected = false,
+                onClick = {
                     auth.signOut()
                     try {
                         val credentialManager = CredentialManager.create(context)
                         val clearRequest = ClearCredentialStateRequest()
-                        CoroutineScope(Dispatchers.Main).launch { credentialManager.clearCredentialState(clearRequest) }
+                        CoroutineScope(Dispatchers.Main).launch {
+                            credentialManager.clearCredentialState(
+                                clearRequest
+                            )
+                        }
                     } catch (e: ClearCredentialException) {
                         Log.e(TAG, "Couldn't clear user credentials: ${e.localizedMessage}")
                     }
                     routeToLogin()
-                }) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Logout,
-                        contentDescription = "Logout",
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-                Text("Logout", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface)
-                Spacer(Modifier.height(5.dp))
-            }
-
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = { (context as? Activity)?.finishAndRemoveTask() }) {
-                    Icon(
-                        imageVector = Icons.Filled.PowerSettingsNew,
-                        contentDescription = "Exit",
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-                Text("Exit", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface)
-                Spacer(Modifier.height(5.dp))
-            }
+                },
+                icon = { Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null) },
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+            )
         }
     }
 }

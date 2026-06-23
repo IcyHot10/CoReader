@@ -166,7 +166,7 @@ class ReaderViewModel(
                 val userDoc = userRef.get().await()
                 if (userDoc.exists()) {
                     val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
-                    val activeGroupId = userModel.activeGroup
+                    val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
 
                     // Always update personal progress in UserModel
                     val userBooks = userModel.books.toMutableMap()
@@ -178,8 +178,8 @@ class ReaderViewModel(
                     userRef.update("books", userBooks).await()
 
                     // If in an active group, also update the group's progress model
-                    if (!activeGroupId.isNullOrBlank()) {
-                        val groupBookRef = firestore.collection("groupBooks").document(activeGroupId)
+                    if (effectiveGroupId != null) {
+                        val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
                         val groupBookDoc = groupBookRef.get().await()
 
                         val groupProgression = if (groupBookDoc.exists()) {
@@ -202,7 +202,7 @@ class ReaderViewModel(
                         if (groupBookDoc.exists()) {
                             groupBookRef.update("bookProgression", groupProgression).await()
                         } else {
-                            groupBookRef.set(GroupBook(groupCode = activeGroupId, bookProgression = groupProgression)).await()
+                            groupBookRef.set(GroupBook(groupCode = effectiveGroupId, bookProgression = groupProgression)).await()
                         }
                     }
                 }
@@ -235,6 +235,31 @@ class ReaderViewModel(
             val userModel = userDoc?.toObject(UserModel::class.java)
             val currentActiveGroupId = userModel?.activeGroup?.takeIf { it.isNotBlank() } ?: "none"
 
+            // Check if this book is actually in the group's uploaded books
+            var resolvedGroupId = currentActiveGroupId
+            if (resolvedGroupId != "none") {
+                try {
+                    val groupBookDoc = firestore.collection("groupBooks").document(resolvedGroupId).get().await()
+                    if (groupBookDoc.exists()) {
+                        val groupBook = groupBookDoc.toObject(GroupBook::class.java)
+                        val bookExistsInGroup = groupBook?.bookProgression?.values?.any {
+                            it.title == activeBook.title && it.author == activeBook.author
+                        } ?: false
+
+                        if (!bookExistsInGroup) {
+                            Log.d("ReaderViewModel", "Book ${activeBook.title} not uploaded to group $resolvedGroupId. Using personal mode.")
+                            resolvedGroupId = "none"
+                        }
+                    } else {
+                        Log.d("ReaderViewModel", "GroupBook doc for $resolvedGroupId not found. Using personal mode.")
+                        resolvedGroupId = "none"
+                    }
+                } catch (e: Exception) {
+                    Log.e("ReaderViewModel", "Error checking book in group", e)
+                    resolvedGroupId = "none"
+                }
+            }
+
             // Set the last used color from user profile if available
             userModel?.lastHighlightColor?.let {
                 _selectedHighlightColor.value = it
@@ -246,9 +271,9 @@ class ReaderViewModel(
                 _fontSize.value = it.fontSize
             }
 
-            // If it's a different book OR the active group has changed, clear state immediately
-            if (activeBook.id != loadedBookId || currentActiveGroupId != loadedGroupId) {
-                Log.d("ReaderViewModel", "Switching book/group: book ${loadedBookId}->${activeBook.id}, group ${loadedGroupId}->${currentActiveGroupId}")
+            // If it's a different book OR the resolved active group has changed, clear state immediately
+            if (activeBook.id != loadedBookId || resolvedGroupId != loadedGroupId) {
+                Log.d("ReaderViewModel", "Switching book/group: book ${loadedBookId}->${activeBook.id}, group ${loadedGroupId}->${resolvedGroupId}")
                 _publication.value = null
                 _isBookReady.value = false
                 hasEverLoaded = false
@@ -256,9 +281,9 @@ class ReaderViewModel(
                 _initialLocator.value = null
                 _highlights.value = emptyList()
                 _notes.value = emptyList()
-                loadedGroupId = currentActiveGroupId
+                loadedGroupId = resolvedGroupId
             } else if (_publication.value != null) {
-                Log.d("ReaderViewModel", "Book ${activeBook.id} already loaded in group $currentActiveGroupId, skipping")
+                Log.d("ReaderViewModel", "Book ${activeBook.id} already loaded in group $resolvedGroupId, skipping")
                 return@launch
             }
 
@@ -277,8 +302,8 @@ class ReaderViewModel(
                         progressFromFirestore = userModel?.books?.get(bookKey)?.progress
                         
                         // Fallback to group progression if personal is missing and we are in a group
-                        if (progressFromFirestore.isNullOrBlank() && currentActiveGroupId != "none") {
-                            val groupBookDoc = firestore.collection("groupBooks").document(currentActiveGroupId).get().await()
+                        if (progressFromFirestore.isNullOrBlank() && loadedGroupId != "none") {
+                            val groupBookDoc = firestore.collection("groupBooks").document(loadedGroupId!!).get().await()
                             val groupBook = groupBookDoc.toObject(GroupBook::class.java)
                             val userBookInGroup = groupBook?.bookProgression?.get(uid)
                             if (userBookInGroup?.title == activeBook.title && userBookInGroup.author == activeBook.author) {
@@ -435,7 +460,7 @@ class ReaderViewModel(
                 val userDoc = userRef.get().await()
                 if (userDoc.exists()) {
                     val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
-                    val activeGroupId = userModel.activeGroup
+                    val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
 
                     val highlightColor = _selectedHighlightColor.value
                     val highlightEntry = org.json.JSONObject().apply {
@@ -452,8 +477,8 @@ class ReaderViewModel(
                     }
                     _highlights.value = _highlights.value + HighlightData(locator, uid, highlightColor)
 
-                    if (!activeGroupId.isNullOrBlank()) {
-                        val groupBookRef = firestore.collection("groupBooks").document(activeGroupId)
+                    if (effectiveGroupId != null) {
+                        val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
                         val groupBookDoc = groupBookRef.get().await()
                         
                         val progression = if (groupBookDoc.exists()) {
@@ -479,7 +504,7 @@ class ReaderViewModel(
                         if (groupBookDoc.exists()) {
                             groupBookRef.update("bookProgression", progression).await()
                         } else {
-                            groupBookRef.set(GroupBook(groupCode = activeGroupId, bookProgression = progression)).await()
+                            groupBookRef.set(GroupBook(groupCode = effectiveGroupId, bookProgression = progression)).await()
                         }
                     } else {
                         val books = userModel.books.toMutableMap()
@@ -510,7 +535,7 @@ class ReaderViewModel(
                 val userDoc = userRef.get().await()
                 if (userDoc.exists()) {
                     val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
-                    val activeGroupId = userModel.activeGroup
+                    val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
 
                     val noteColor = _selectedHighlightColor.value
                     val noteEntry = org.json.JSONObject().apply {
@@ -528,8 +553,8 @@ class ReaderViewModel(
                     }
                     _notes.value = _notes.value + NoteData(locator, uid, content, noteColor)
 
-                    if (!activeGroupId.isNullOrBlank()) {
-                        val groupBookRef = firestore.collection("groupBooks").document(activeGroupId)
+                    if (effectiveGroupId != null) {
+                        val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
                         val groupBookDoc = groupBookRef.get().await()
                         
                         val progression = if (groupBookDoc.exists()) {
@@ -555,7 +580,7 @@ class ReaderViewModel(
                         if (groupBookDoc.exists()) {
                             groupBookRef.update("bookProgression", progression).await()
                         } else {
-                            groupBookRef.set(GroupBook(groupCode = activeGroupId, bookProgression = progression)).await()
+                            groupBookRef.set(GroupBook(groupCode = effectiveGroupId, bookProgression = progression)).await()
                         }
                     } else {
                         val books = userModel.books.toMutableMap()
