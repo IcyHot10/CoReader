@@ -11,6 +11,7 @@ import com.indeavour.coreader.AppRoomDatabase
 import com.indeavour.coreader.model.firebase.BookModel
 import com.indeavour.coreader.model.firebase.GroupBook
 import com.indeavour.coreader.model.firebase.UserModel
+import com.indeavour.coreader.model.room.UserPreferences
 import com.indeavour.coreader.repository.ReaderRepository
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
@@ -18,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import org.readium.r2.shared.publication.Locator
@@ -73,6 +75,9 @@ class ReaderViewModel(
     private val _selectedHighlightColor = MutableStateFlow(0x66FFFF00)
     val selectedHighlightColor: StateFlow<Int> = _selectedHighlightColor
 
+    private val _fontSize = MutableStateFlow(100f)
+    val fontSize: StateFlow<Float> = _fontSize
+
     fun setSelectedHighlightColor(color: Int) {
         _selectedHighlightColor.value = color
         
@@ -85,6 +90,14 @@ class ReaderViewModel(
             } catch (e: Exception) {
                 Log.e("ReaderViewModel", "Failed to save lastHighlightColor", e)
             }
+        }
+    }
+
+    fun setFontSize(size: Float) {
+        _fontSize.value = size
+        viewModelScope.launch {
+            val database = AppRoomDatabase.getDatabase(getApplication())
+            database.userPreferencesDao().insertOrUpdate(UserPreferences(fontSize = size))
         }
     }
 
@@ -225,6 +238,12 @@ class ReaderViewModel(
             // Set the last used color from user profile if available
             userModel?.lastHighlightColor?.let {
                 _selectedHighlightColor.value = it
+            }
+
+            // Load local user preferences
+            val prefs = database.userPreferencesDao().getPreferences().firstOrNull()
+            prefs?.let {
+                _fontSize.value = it.fontSize
             }
 
             // If it's a different book OR the active group has changed, clear state immediately

@@ -22,6 +22,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.TextDecrease
+import androidx.compose.material.icons.filled.TextIncrease
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -185,9 +187,23 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
         val highlights by viewModel.highlights.collectAsState()
         val notes by viewModel.notes.collectAsState()
+        val fontSize by viewModel.fontSize.collectAsState()
+
         LaunchedEffect(highlights, notes, isBookReady) {
             if (isBookReady) {
                 applyAnnotations(highlights, notes)
+            }
+        }
+
+        // Handle font size changes
+        LaunchedEffect(fontSize) {
+            val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+            if (navigator != null) {
+                val updatedPreferences = currentPreferences?.copy(
+                    fontSize = fontSize / 100.0
+                ) ?: EpubPreferences(fontSize = fontSize / 100.0)
+                currentPreferences = updatedPreferences
+                navigator.submitPreferences(updatedPreferences)
             }
         }
         
@@ -202,7 +218,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     Theme.LIGHT
                 }
                 
-                val preferences = EpubPreferences(
+                val preferences = (currentPreferences ?: EpubPreferences()).copy(
                     theme = theme,
                     backgroundColor = PreferenceColor(colorScheme.background.toArgb()),
                     textColor = PreferenceColor(colorScheme.onBackground.toArgb())
@@ -436,6 +452,33 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                                     )
                                                 }
                                             }
+                                            Spacer(modifier = Modifier.height(16.dp))
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.Center,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                IconButton(onClick = { viewModel.setFontSize((fontSize - 10f).coerceAtLeast(50f)) }) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.TextDecrease,
+                                                        contentDescription = "Decrease Font Size",
+                                                        tint = colorScheme.secondary
+                                                    )
+                                                }
+                                                Text(
+                                                    text = "${fontSize.toInt()}%",
+                                                    style = MaterialTheme.typography.bodyLarge,
+                                                    color = colorScheme.secondary,
+                                                    modifier = Modifier.padding(horizontal = 16.dp)
+                                                )
+                                                IconButton(onClick = { viewModel.setFontSize((fontSize + 10f).coerceAtMost(300f)) }) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.TextIncrease,
+                                                        contentDescription = "Increase Font Size",
+                                                        tint = colorScheme.secondary
+                                                    )
+                                                }
+                                            }
                                             Spacer(modifier = Modifier.height(8.dp))
                                         }
                                     }
@@ -574,7 +617,8 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         val initialPreferences = EpubPreferences(
             theme = theme,
             backgroundColor = colorScheme?.let { PreferenceColor(it.background.toArgb()) },
-            textColor = colorScheme?.let { PreferenceColor(it.onBackground.toArgb()) }
+            textColor = colorScheme?.let { PreferenceColor(it.onBackground.toArgb()) },
+            fontSize = viewModel.fontSize.value / 100.0
         )
         currentPreferences = initialPreferences
 
