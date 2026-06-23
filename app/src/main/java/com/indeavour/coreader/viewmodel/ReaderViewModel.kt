@@ -165,7 +165,7 @@ class ReaderViewModel(
                     userRef.update("books", userBooks).await()
 
                     // If in an active group, also update the group's progress model
-                    if (activeGroupId != null) {
+                    if (!activeGroupId.isNullOrBlank()) {
                         val groupBookRef = firestore.collection("groupBooks").document(activeGroupId)
                         val groupBookDoc = groupBookRef.get().await()
 
@@ -220,7 +220,7 @@ class ReaderViewModel(
             val uid = auth.currentUser?.uid
             val userDoc = if (uid != null) firestore.collection("users").document(uid).get().await() else null
             val userModel = userDoc?.toObject(UserModel::class.java)
-            val currentActiveGroupId = userModel?.activeGroup ?: "none"
+            val currentActiveGroupId = userModel?.activeGroup?.takeIf { it.isNotBlank() } ?: "none"
 
             // Set the last used color from user profile if available
             userModel?.lastHighlightColor?.let {
@@ -433,7 +433,7 @@ class ReaderViewModel(
                     }
                     _highlights.value = _highlights.value + HighlightData(locator, uid, highlightColor)
 
-                    if (activeGroupId != null) {
+                    if (!activeGroupId.isNullOrBlank()) {
                         val groupBookRef = firestore.collection("groupBooks").document(activeGroupId)
                         val groupBookDoc = groupBookRef.get().await()
                         
@@ -509,7 +509,7 @@ class ReaderViewModel(
                     }
                     _notes.value = _notes.value + NoteData(locator, uid, content, noteColor)
 
-                    if (activeGroupId != null) {
+                    if (!activeGroupId.isNullOrBlank()) {
                         val groupBookRef = firestore.collection("groupBooks").document(activeGroupId)
                         val groupBookDoc = groupBookRef.get().await()
                         

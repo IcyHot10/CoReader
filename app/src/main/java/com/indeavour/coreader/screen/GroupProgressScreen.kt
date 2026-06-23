@@ -33,6 +33,15 @@ fun GroupProgressScreen(onBack: () -> Unit) {
     val activeGroupId by groupViewModel.activeGroupId.collectAsState()
     val usernames by groupViewModel.usernames.collectAsState()
 
+    // Trigger name fetching for all users in the book progression
+    LaunchedEffect(groupBooks) {
+        groupBooks.values.forEach { groupBook ->
+            groupBook.bookProgression.keys.forEach { userId ->
+                groupViewModel.fetchUsername(userId)
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -73,9 +82,14 @@ fun GroupProgressScreen(onBack: () -> Unit) {
 @Composable
 fun BookProgressItem(bookKey: String, groupBook: GroupBook, usernames: Map<String, String>) {
     var expanded by remember { mutableStateOf(false) }
-    val bookInfo = bookKey.split("_")
-    val title = bookInfo.getOrNull(0) ?: "Unknown Title"
-    val author = bookInfo.getOrNull(1) ?: "Unknown Author"
+    
+    val membersInThisBook = groupBook.bookProgression.filter { 
+        "${it.value.title}_${it.value.author}" == bookKey 
+    }
+    
+    val sampleBook = membersInThisBook.values.firstOrNull()
+    val title = sampleBook?.title ?: "Unknown Title"
+    val author = sampleBook?.author ?: "Unknown Author"
 
     Card(
         modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
@@ -121,7 +135,10 @@ fun BookProgressItem(bookKey: String, groupBook: GroupBook, usernames: Map<Strin
                     }
 
                     membersInThisBook.forEach { (userId, bookModel) ->
-                        UserProgressRow(userId, bookModel, usernames[userId] ?: "User $userId")
+                        // Show "User [ID]" while loading, but the fetchUsername logic in GroupViewModel
+                        // should be populating the 'usernames' map automatically.
+                        val displayName = usernames[userId] ?: "User $userId"
+                        UserProgressRow(userId, bookModel, displayName)
                         if (membersInThisBook.keys.toList().last() != userId) {
                             HorizontalDivider(
                                 modifier = Modifier.padding(vertical = 8.dp), 

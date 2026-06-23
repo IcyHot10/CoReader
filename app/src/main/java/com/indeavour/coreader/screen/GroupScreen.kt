@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -30,23 +31,64 @@ fun GroupScreen(onBack: () -> Unit) {
     var groupName by remember { mutableStateOf("") }
     var showJoinDialog by remember { mutableStateOf(false) }
     var groupCode by remember { mutableStateOf("") }
+    var groupToLeave by remember { mutableStateOf<GroupModel?>(null) }
+
+    if (groupToLeave != null) {
+        AlertDialog(
+            onDismissRequest = { groupToLeave = null },
+            title = { Text("Leave Group", color = MaterialTheme.colorScheme.secondary) },
+            text = { Text("Are you sure you want to leave '${groupToLeave?.groupName}'? Your progress will still be saved personally, but you won't be able to see others' progress in this group.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        groupToLeave?.let { group ->
+                            groupViewModel.leaveGroup(group.groupCode) { success ->
+                                if (success) {
+                                    AppUtils.showToast(context, "Left group")
+                                } else {
+                                    AppUtils.showToast(context, "Failed to leave group")
+                                }
+                            }
+                        }
+                        groupToLeave = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal)
+                ) {
+                    Text("Leave", color = MaterialTheme.colorScheme.secondary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { groupToLeave = null }) {
+                    Text("Cancel", color = Teal)
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    }
 
     if (showJoinDialog) {
         AlertDialog(
             onDismissRequest = { showJoinDialog = false },
-            title = { Text("Join Group") },
+            title = { Text("Join Group", color = MaterialTheme.colorScheme.secondary) },
             text = {
                 Column {
                     TextField(
                         value = groupCode,
                         onValueChange = { groupCode = it },
                         label = { Text("Group Code") },
-                        singleLine = true
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surface,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                            focusedIndicatorColor = Teal,
+                            cursorColor = Teal
+                        )
                     )
                 }
             },
             confirmButton = {
-                TextButton(
+                Button(
                     onClick = {
                         if (groupCode.isNotBlank()) {
                             groupViewModel.joinGroup(groupCode) { success, error ->
@@ -60,37 +102,46 @@ fun GroupScreen(onBack: () -> Unit) {
                             }
                         }
                     },
-                    enabled = groupCode.isNotBlank()
+                    enabled = groupCode.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal)
                 ) {
-                    Text("Join")
+                    Text("Join", color = MaterialTheme.colorScheme.secondary)
                 }
             },
             dismissButton = {
                 TextButton(
                     onClick = { showJoinDialog = false }
                 ) {
-                    Text("Cancel")
+                    Text("Cancel", color = Teal)
                 }
-            }
+            },
+            containerColor = MaterialTheme.colorScheme.surface
         )
     }
 
     if (showCreateDialog) {
         AlertDialog(
             onDismissRequest = { showCreateDialog = false },
-            title = { Text("Create New Group") },
+            title = { Text("Create New Group", color = MaterialTheme.colorScheme.secondary) },
             text = {
                 Column {
                     TextField(
                         value = groupName,
                         onValueChange = { groupName = it },
                         label = { Text("Group Name") },
-                        singleLine = true
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surface,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                            focusedIndicatorColor = Teal,
+                            cursorColor = Teal
+                        )
                     )
                 }
             },
             confirmButton = {
-                TextButton(
+                Button(
                     onClick = {
                         if (groupName.isNotBlank()) {
                             groupViewModel.createGroup(groupName) { success, code ->
@@ -104,18 +155,20 @@ fun GroupScreen(onBack: () -> Unit) {
                             }
                         }
                     },
-                    enabled = groupName.isNotBlank()
+                    enabled = groupName.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal)
                 ) {
-                    Text("Create")
+                    Text("Create", color = MaterialTheme.colorScheme.secondary)
                 }
             },
             dismissButton = {
                 TextButton(
                     onClick = { showCreateDialog = false }
                 ) {
-                    Text("Cancel")
+                    Text("Cancel", color = Teal)
                 }
-            }
+            },
+            containerColor = MaterialTheme.colorScheme.surface
         )
     }
 
@@ -211,9 +264,24 @@ fun GroupScreen(onBack: () -> Unit) {
                             CardDefaults.cardColors()
                         }
                     ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(text = group.groupName, style = MaterialTheme.typography.titleLarge)
-                            Text(text = "Code: ${group.groupCode}", style = MaterialTheme.typography.bodyMedium)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(text = group.groupName, style = MaterialTheme.typography.titleLarge)
+                                Text(text = "Code: ${group.groupCode}", style = MaterialTheme.typography.bodyMedium)
+                            }
+                            IconButton(onClick = { groupToLeave = group }) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Logout,
+                                    contentDescription = "Leave Group",
+                                    tint = if (isActive) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                         }
                     }
                 }
