@@ -183,12 +183,14 @@ class ReaderViewModel(
                         val groupBookDoc = groupBookRef.get().await()
 
                         val groupProgression = if (groupBookDoc.exists()) {
-                            groupBookDoc.toObject(GroupBook::class.java)?.bookProgression?.toMutableMap() ?: mutableMapOf()
+                            val gb = groupBookDoc.toObject(GroupBook::class.java)
+                            gb?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: mutableMapOf()
                         } else {
                             mutableMapOf()
                         }
 
-                        val existingInGroup = groupProgression[uid]
+                        val userBooks = groupProgression[uid] ?: mutableMapOf()
+                        val existingInGroup = BookModel.fromAny(userBooks[bookKey])
                         val groupUserBook = if (existingInGroup != null && existingInGroup.title == pub.metadata.title && existingInGroup.author == authorName) {
                             existingInGroup
                         } else {
@@ -197,7 +199,8 @@ class ReaderViewModel(
                                 author = authorName
                             )
                         }
-                        groupProgression[uid] = groupUserBook.copy(progress = progressionJson)
+                        userBooks[bookKey] = groupUserBook.copy(progress = progressionJson)
+                        groupProgression[uid] = userBooks
 
                         if (groupBookDoc.exists()) {
                             groupBookRef.update("bookProgression", groupProgression).await()
@@ -242,8 +245,8 @@ class ReaderViewModel(
                     val groupBookDoc = firestore.collection("groupBooks").document(resolvedGroupId).get().await()
                     if (groupBookDoc.exists()) {
                         val groupBook = groupBookDoc.toObject(GroupBook::class.java)
-                        val bookExistsInGroup = groupBook?.bookProgression?.values?.any {
-                            it.title == activeBook.title && it.author == activeBook.author
+                        val bookExistsInGroup = groupBook?.bookProgression?.values?.any { userBooks ->
+                            userBooks.values.any { BookModel.fromAny(it)?.let { bm -> bm.title == activeBook.title && bm.author == activeBook.author } ?: false }
                         } ?: false
 
                         if (!bookExistsInGroup) {
@@ -305,7 +308,7 @@ class ReaderViewModel(
                         if (progressFromFirestore.isNullOrBlank() && loadedGroupId != "none") {
                             val groupBookDoc = firestore.collection("groupBooks").document(loadedGroupId!!).get().await()
                             val groupBook = groupBookDoc.toObject(GroupBook::class.java)
-                            val userBookInGroup = groupBook?.bookProgression?.get(uid)
+                            val userBookInGroup = groupBook?.getBookModel(uid, bookKey)
                             if (userBookInGroup?.title == activeBook.title && userBookInGroup.author == activeBook.author) {
                                 progressFromFirestore = userBookInGroup.progress
                             }
@@ -339,8 +342,9 @@ class ReaderViewModel(
                                 val groupBook = groupBookDoc.toObject(GroupBook::class.java)
                                 
                                 // Load annotations from EVERYONE in the group for this book
-                                groupBook?.bookProgression?.forEach { (memberId, bookModel) ->
-                                    if (bookModel.title == activeBook.title && bookModel.author == activeBook.author) {
+                                groupBook?.bookProgression?.forEach { (memberId, userBooks) ->
+                                    val bookModel = BookModel.fromAny(userBooks[bookKey])
+                                    if (bookModel != null && bookModel.title == activeBook.title && bookModel.author == activeBook.author) {
                                         userIdsToFetch.add(memberId)
                                         bookModel.highlights.forEach { entryJson ->
                                             try {
@@ -481,13 +485,15 @@ class ReaderViewModel(
                         val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
                         val groupBookDoc = groupBookRef.get().await()
                         
-                        val progression = if (groupBookDoc.exists()) {
-                            groupBookDoc.toObject(GroupBook::class.java)?.bookProgression?.toMutableMap() ?: mutableMapOf()
+                        val groupProgression = if (groupBookDoc.exists()) {
+                            val gb = groupBookDoc.toObject(GroupBook::class.java)
+                            gb?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: mutableMapOf()
                         } else {
                             mutableMapOf()
                         }
 
-                        val existingInGroup = progression[uid]
+                        val userBooks = groupProgression[uid] ?: mutableMapOf()
+                        val existingInGroup = BookModel.fromAny(userBooks[bookKey])
                         val userBook = if (existingInGroup != null && existingInGroup.title == pub.metadata.title && existingInGroup.author == (pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author")) {
                             existingInGroup
                         } else {
@@ -499,12 +505,13 @@ class ReaderViewModel(
 
                         val currentHighlights = userBook.highlights.toMutableList()
                         currentHighlights.add(highlightEntry)
-                        progression[uid] = userBook.copy(highlights = currentHighlights)
+                        userBooks[bookKey] = userBook.copy(highlights = currentHighlights)
+                        groupProgression[uid] = userBooks
                         
                         if (groupBookDoc.exists()) {
-                            groupBookRef.update("bookProgression", progression).await()
+                            groupBookRef.update("bookProgression", groupProgression).await()
                         } else {
-                            groupBookRef.set(GroupBook(groupCode = effectiveGroupId, bookProgression = progression)).await()
+                            groupBookRef.set(GroupBook(groupCode = effectiveGroupId, bookProgression = groupProgression)).await()
                         }
                     } else {
                         val books = userModel.books.toMutableMap()
@@ -557,13 +564,15 @@ class ReaderViewModel(
                         val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
                         val groupBookDoc = groupBookRef.get().await()
                         
-                        val progression = if (groupBookDoc.exists()) {
-                            groupBookDoc.toObject(GroupBook::class.java)?.bookProgression?.toMutableMap() ?: mutableMapOf()
+                        val groupProgression = if (groupBookDoc.exists()) {
+                            val gb = groupBookDoc.toObject(GroupBook::class.java)
+                            gb?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: mutableMapOf()
                         } else {
                             mutableMapOf()
                         }
 
-                        val existingInGroup = progression[uid]
+                        val userBooks = groupProgression[uid] ?: mutableMapOf()
+                        val existingInGroup = BookModel.fromAny(userBooks[bookKey])
                         val userBook = if (existingInGroup != null && existingInGroup.title == pub.metadata.title && existingInGroup.author == (pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author")) {
                             existingInGroup
                         } else {
@@ -575,12 +584,13 @@ class ReaderViewModel(
 
                         val currentNotes = userBook.notes.toMutableList()
                         currentNotes.add(noteEntry)
-                        progression[uid] = userBook.copy(notes = currentNotes)
+                        userBooks[bookKey] = userBook.copy(notes = currentNotes)
+                        groupProgression[uid] = userBooks
                         
                         if (groupBookDoc.exists()) {
-                            groupBookRef.update("bookProgression", progression).await()
+                            groupBookRef.update("bookProgression", groupProgression).await()
                         } else {
-                            groupBookRef.set(GroupBook(groupCode = effectiveGroupId, bookProgression = progression)).await()
+                            groupBookRef.set(GroupBook(groupCode = effectiveGroupId, bookProgression = groupProgression)).await()
                         }
                     } else {
                         val books = userModel.books.toMutableMap()

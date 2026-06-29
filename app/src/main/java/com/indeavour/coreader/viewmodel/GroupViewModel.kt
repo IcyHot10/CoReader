@@ -90,7 +90,12 @@ class GroupViewModel : ViewModel() {
                     return@addSnapshotListener
                 }
                 
-                val gb = snapshot?.toObject(GroupBook::class.java)
+                val gb = try {
+                    snapshot?.toObject(GroupBook::class.java)
+                } catch (e: Exception) {
+                    Log.e("GroupViewModel", "Error deserializing GroupBook", e)
+                    null
+                }
                 if (gb == null || gb.bookProgression.isEmpty()) {
                     _groupBooks.value = emptyMap()
                     return@addSnapshotListener
@@ -104,9 +109,10 @@ class GroupViewModel : ViewModel() {
                 // Create a map where key is "Title_Author" and value is the GroupBook itself
                 // This identifies all unique books being read in the group
                 val uniqueBooks = gb.bookProgression.values
-                    .filter { it.title.isNotBlank() }
-                    .associateBy { "${it.title}_${it.author}" }
-                    .mapValues { gb }
+                    .flatMap { it.keys }
+                    .filter { it != "deleted" }
+                    .distinct()
+                    .associateWith { gb }
                 
                 _groupBooks.value = uniqueBooks
             }
@@ -162,6 +168,8 @@ class GroupViewModel : ViewModel() {
             return
         }
         val docId = groupCode
+        val bookKey = "${book.title}_${book.author}"
+        val bookToUpload = book.copy(highlights = emptyList(), notes = emptyList())
 
         viewModelScope.launch {
             try {
@@ -169,14 +177,30 @@ class GroupViewModel : ViewModel() {
                 val groupBookDoc = groupBookRef.get().await()
 
                 if (groupBookDoc.exists()) {
-                    val groupBook = groupBookDoc.toObject(GroupBook::class.java)!!
-                    val updatedProgression = groupBook.bookProgression.toMutableMap()
-                    updatedProgression[uid] = book
-                    groupBookRef.update("bookProgression", updatedProgression).await()
+                    val groupBook = try {
+                        groupBookDoc.toObject(GroupBook::class.java)
+                    } catch (e: Exception) {
+                        Log.e("GroupViewModel", "Error deserializing GroupBook during upload", e)
+                        null
+                    }
+                    if (groupBook != null) {
+                        val updatedProgression = groupBook.bookProgression.mapValues { it.value.toMutableMap() }.toMutableMap()
+                        val userBooks = updatedProgression[uid] ?: mutableMapOf()
+                        userBooks[bookKey] = bookToUpload
+                        updatedProgression[uid] = userBooks
+                        groupBookRef.update("bookProgression", updatedProgression).await()
+                    } else {
+                        // Fallback or handle corrupt data: overwrite with new structure
+                        val newGroupBook = GroupBook(
+                            groupCode = groupCode,
+                            bookProgression = mapOf(uid to mapOf(bookKey to bookToUpload))
+                        )
+                        groupBookRef.set(newGroupBook).await()
+                    }
                 } else {
                     val newGroupBook = GroupBook(
                         groupCode = groupCode,
-                        bookProgression = mapOf(uid to book.copy(highlights = emptyList()))
+                        bookProgression = mapOf(uid to mapOf(bookKey to bookToUpload))
                     )
                     groupBookRef.set(newGroupBook).await()
                 }

@@ -83,9 +83,9 @@ fun GroupProgressScreen(onBack: () -> Unit) {
 fun BookProgressItem(bookKey: String, groupBook: GroupBook, usernames: Map<String, String>) {
     var expanded by remember { mutableStateOf(false) }
     
-    val membersInThisBook = groupBook.bookProgression.filter { 
-        "${it.value.title}_${it.value.author}" == bookKey 
-    }
+    val membersInThisBook = groupBook.bookProgression.keys.mapNotNull { userId ->
+        groupBook.getBookModel(userId, bookKey)?.let { userId to it }
+    }.toMap()
     
     val sampleBook = membersInThisBook.values.firstOrNull()
     val title = sampleBook?.title ?: "Unknown Title"
@@ -126,10 +126,6 @@ fun BookProgressItem(bookKey: String, groupBook: GroupBook, usernames: Map<Strin
 
             AnimatedVisibility(visible = expanded) {
                 Column(modifier = Modifier.padding(top = 16.dp)) {
-                    val membersInThisBook = groupBook.bookProgression.filter { 
-                        "${it.value.title}_${it.value.author}" == bookKey 
-                    }
-
                     if (membersInThisBook.isEmpty()) {
                         Text("No progress recorded for this book", style = MaterialTheme.typography.bodySmall)
                     }
