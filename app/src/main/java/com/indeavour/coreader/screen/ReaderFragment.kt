@@ -19,6 +19,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
@@ -117,16 +118,32 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         }
     }
 
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun ReaderScreen() {
         val publication by viewModel.publication.collectAsState()
         val progress by viewModel.progress.collectAsState()
+        val groupProgress by viewModel.groupProgress.collectAsState()
+        val remoteProgression by viewModel.remoteProgression.collectAsState()
         val isBookReady by viewModel.isBookReady.collectAsState()
         var isInterfaceVisible by remember { mutableStateOf(false) }
         var isColorPickerExpanded by remember { mutableStateOf(false) }
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
         var isContainerReady by remember { mutableStateOf(false) }
+
+        var isSyncDismissed by remember { mutableStateOf(false) }
+        LaunchedEffect(remoteProgression) {
+            isSyncDismissed = false
+        }
+
+        val showSyncButton = remember(remoteProgression, progress, isSyncDismissed) {
+            if (isSyncDismissed) return@remember false
+            val remoteTotal = remoteProgression?.locations?.totalProgression ?: 0.0
+            val currentTotal = progress.value.toDouble()
+            // Show if remote is ahead by more than 0.5% to avoid jitter
+            remoteTotal > (currentTotal + 0.005)
+        }
 
         var noteLocator by remember { mutableStateOf<Locator?>(null) }
         LaunchedEffect(Unit) {
@@ -250,16 +267,29 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     Spacer(Modifier.height(12.dp))
                     Text(
                         "Table of Contents",
-                        modifier = Modifier.padding(16.dp),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         style = MaterialTheme.typography.titleLarge,
                         color = colorScheme.secondary
                     )
+                    if (groupProgress.isNotEmpty()) {
+                        Text(
+                            "Group Activity: ${groupProgress.size} members",
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colorScheme.secondary.copy(alpha = 0.7f)
+                        )
+                    }
                     HorizontalDivider(color = colorScheme.secondary.copy(alpha = 0.2f))
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
                         publication?.tableOfContents?.let { toc ->
                             items(toc) { link ->
-                                Text(
-                                    text = link.title ?: "Untitled",
+                                val membersInChapter = groupProgress.filter { 
+                                    // link.url() and it.locator.href are both Readium Url objects
+                                    it.locator.href == link.url() || 
+                                    it.locator.href.toString().substringBefore("#") == link.url().toString().substringBefore("#")
+                                }
+                                
+                                Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable {
@@ -268,10 +298,48 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                             scope.launch { drawerState.close() }
                                             isInterfaceVisible = false
                                         }
-                                        .padding(16.dp),
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = colorScheme.secondary
-                                )
+                                        .padding(16.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = link.title ?: "Untitled",
+                                            modifier = Modifier.weight(1f),
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = colorScheme.secondary
+                                        )
+                                        
+                                        if (membersInChapter.isNotEmpty()) {
+                                            Row(
+                                                horizontalArrangement = Arrangement.End,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                membersInChapter.forEach { member ->
+                                                    Surface(
+                                                        modifier = Modifier.size(24.dp),
+                                                        shape = CircleShape,
+                                                        color = colorScheme.secondary
+                                                    ) {
+                                                        Box(contentAlignment = Alignment.Center) {
+                                                            Text(
+                                                                text = member.username.take(1).uppercase().ifEmpty { "?" },
+                                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                                    fontSize = 12.sp,
+                                                                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                                                ),
+                                                                color = Teal // Contrasts with colorScheme.secondary which is likely light
+                                                            )
+                                                        }
+                                                    }
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -530,6 +598,57 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                 }
                             }
                         }
+                    }
+
+                    // Sync Progression Button
+                    AnimatedVisibility(
+                        visible = showSyncButton && isBookReady,
+                        enter = slideInVertically(initialOffsetY = { -it }),
+                        exit = slideOutVertically(targetOffsetY = { -it }),
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 80.dp)
+                    ) {
+                        val dismissState = rememberSwipeToDismissBoxState(
+                            confirmValueChange = {
+                                if (it != SwipeToDismissBoxValue.Settled) {
+                                    isSyncDismissed = true
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                        )
+
+                        SwipeToDismissBox(
+                            state = dismissState,
+                            backgroundContent = {},
+                            content = {
+                                Button(
+                                    onClick = {
+                                        remoteProgression?.let { locator ->
+                                            val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+                                            navigator?.go(locator, animated = true)
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Teal,
+                                        contentColor = colorScheme.secondary
+                                    ),
+                                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.CloudDownload,
+                                            contentDescription = "Sync",
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Jump to cloud progress")
+                                    }
+                                }
+                            }
+                        )
                     }
 
                     // Loading Screen Overlay

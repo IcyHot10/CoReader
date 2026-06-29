@@ -107,11 +107,24 @@ class ReaderViewModel(
     private val _notes = MutableStateFlow<List<NoteData>>(emptyList())
     val notes: StateFlow<List<NoteData>> = _notes
 
+    data class MemberProgress(
+        val userId: String,
+        val username: String,
+        val locator: Locator
+    )
+
+    private val _groupProgress = MutableStateFlow<List<MemberProgress>>(emptyList())
+    val groupProgress: StateFlow<List<MemberProgress>> = _groupProgress
+
     private val _usernames = MutableStateFlow<Map<String, String>>(emptyMap())
     val usernames: StateFlow<Map<String, String>> = _usernames
 
+    private val _remoteProgression = MutableStateFlow<Locator?>(null)
+    val remoteProgression: StateFlow<Locator?> = _remoteProgression
+
     private var loadedBookId: Int? = null
     private var loadedGroupId: String? = "none" // Use "none" as a sentinel for personal
+    private var groupBookListener: com.google.firebase.firestore.ListenerRegistration? = null
 
     private var lastLocator: Locator? = null
 
@@ -217,6 +230,7 @@ class ReaderViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        groupBookListener?.remove()
         saveProgressionToFirestore()
     }
 
@@ -277,6 +291,8 @@ class ReaderViewModel(
             // If it's a different book OR the resolved active group has changed, clear state immediately
             if (activeBook.id != loadedBookId || resolvedGroupId != loadedGroupId) {
                 Log.d("ReaderViewModel", "Switching book/group: book ${loadedBookId}->${activeBook.id}, group ${loadedGroupId}->${resolvedGroupId}")
+                groupBookListener?.remove()
+                groupBookListener = null
                 _publication.value = null
                 _isBookReady.value = false
                 hasEverLoaded = false
@@ -328,40 +344,57 @@ class ReaderViewModel(
 
                 openBook(bookFile, progression = progressionToUse)
 
-                // Load highlights and notes
-                val highlightsList = mutableListOf<HighlightData>()
-                val notesList = mutableListOf<NoteData>()
-                val userIdsToFetch = mutableSetOf<String>()
-                if (uid != null) {
-                    try {
-                        val bookKey = "${activeBook.title}_${activeBook.author}"
-                        if (currentActiveGroupId != "none") {
-                            Log.d("ReaderViewModel", "Loading ALL group annotations from group: $currentActiveGroupId")
-                            val groupBookDoc = firestore.collection("groupBooks").document(currentActiveGroupId).get().await()
-                            if (groupBookDoc.exists()) {
-                                val groupBook = groupBookDoc.toObject(GroupBook::class.java)
-                                
-                                // Load annotations from EVERYONE in the group for this book
+                // Set up real-time listener for group progress and annotations
+                if (currentActiveGroupId != "none") {
+                    val bookKey = "${activeBook.title}_${activeBook.author}"
+                    groupBookListener = firestore.collection("groupBooks").document(currentActiveGroupId)
+                        .addSnapshotListener { snapshot, e ->
+                            if (e != null) {
+                                Log.e("ReaderViewModel", "GroupBook listener failed", e)
+                                return@addSnapshotListener
+                            }
+
+                            if (snapshot != null && snapshot.exists()) {
+                                Log.d("ReaderViewModel", "GroupBook snapshot received for ${snapshot.id}")
+                                val groupBook = snapshot.toObject(GroupBook::class.java)
+                                val highlightsList = mutableListOf<HighlightData>()
+                                val notesList = mutableListOf<NoteData>()
+                                val groupProgressList = mutableListOf<MemberProgress>()
+                                val userIdsToFetch = mutableSetOf<String>()
+
                                 groupBook?.bookProgression?.forEach { (memberId, userBooks) ->
                                     val bookModel = BookModel.fromAny(userBooks[bookKey])
                                     if (bookModel != null && bookModel.title == activeBook.title && bookModel.author == activeBook.author) {
                                         userIdsToFetch.add(memberId)
+
+                                        // Load progress
+                                        if (bookModel.progress.isNotBlank()) {
+                                            try {
+                                                val loc = Locator.fromJSON(org.json.JSONObject(bookModel.progress))
+                                                if (loc != null) {
+                                                    Log.d("ReaderViewModel", "Found progress for $memberId: ${loc.href}")
+                                                    groupProgressList.add(MemberProgress(memberId, _usernames.value[memberId] ?: "", loc))
+                                                    
+                                                    // Update remote progression if it's the current user
+                                                    if (memberId == uid) {
+                                                        _remoteProgression.value = loc
+                                                    }
+                                                }
+                                            } catch (e: Exception) {}
+                                        }
+
                                         bookModel.highlights.forEach { entryJson ->
                                             try {
                                                 val obj = org.json.JSONObject(entryJson)
                                                 val locJson = obj.optJSONObject("locator")
                                                 val hUserId = obj.optString("userId", memberId)
                                                 val hColor = obj.optInt("color", 0x66FFFF00)
-                                                val locator = if (locJson != null) {
-                                                    Locator.fromJSON(locJson)
-                                                } else {
-                                                    Locator.fromJSON(obj)
-                                                }
+                                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
                                                 if (locator != null) {
                                                     highlightsList.add(HighlightData(locator, hUserId, hColor))
                                                     userIdsToFetch.add(hUserId)
                                                 }
-                                            } catch (e: Exception) {}
+                                            } catch (ex: Exception) {}
                                         }
                                         bookModel.notes.forEach { entryJson ->
                                             try {
@@ -370,23 +403,53 @@ class ReaderViewModel(
                                                 val hUserId = obj.optString("userId", memberId)
                                                 val content = obj.optString("content", "")
                                                 val hColor = obj.optInt("color", 0x66FFFF00)
-                                                val locator = if (locJson != null) {
-                                                    Locator.fromJSON(locJson)
-                                                } else {
-                                                    Locator.fromJSON(obj)
-                                                }
+                                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
                                                 if (locator != null) {
                                                     notesList.add(NoteData(locator, hUserId, content, hColor))
                                                     userIdsToFetch.add(hUserId)
                                                 }
-                                            } catch (e: Exception) {}
+                                            } catch (ex: Exception) {}
                                         }
                                     }
                                 }
+
+                                // Update state
+                                _highlights.value = highlightsList
+                                _notes.value = notesList
+                                
+                                // Fetch missing usernames
+                                viewModelScope.launch {
+                                    val nameMap = _usernames.value.toMutableMap()
+                                    var changed = false
+                                    userIdsToFetch.forEach { id ->
+                                        if (!nameMap.containsKey(id)) {
+                                            try {
+                                                val userSnapshot = firestore.collection("users").document(id).get().await()
+                                                nameMap[id] = userSnapshot.getString("username") ?: "Unknown"
+                                                changed = true
+                                            } catch (ex: Exception) {
+                                                nameMap[id] = "Unknown"
+                                                changed = true
+                                            }
+                                        }
+                                    }
+                                    if (changed) {
+                                        _usernames.value = nameMap
+                                    }
+                                    _groupProgress.value = groupProgressList.map { 
+                                        it.copy(username = nameMap[it.userId] ?: "Unknown")
+                                    }
+                                }
                             }
-                        } else {
-                            Log.d("ReaderViewModel", "No active group, loading personal annotations for: $bookKey")
-                            userIdsToFetch.add(uid)
+                        }
+                } else if (uid != null) {
+                    // Load personal annotations (one-time load is fine for personal)
+                    viewModelScope.launch {
+                        try {
+                            val bookKey = "${activeBook.title}_${activeBook.author}"
+                            val highlightsList = mutableListOf<HighlightData>()
+                            val notesList = mutableListOf<NoteData>()
+                            
                             val userBook = userModel?.books?.get(bookKey)
                             userBook?.highlights?.forEach { entryJson ->
                                 try {
@@ -394,14 +457,9 @@ class ReaderViewModel(
                                     val locJson = obj.optJSONObject("locator")
                                     val hUserId = obj.optString("userId", uid)
                                     val hColor = obj.optInt("color", 0x66FFFF00)
-                                    val locator = if (locJson != null) {
-                                        Locator.fromJSON(locJson)
-                                    } else {
-                                        Locator.fromJSON(obj)
-                                    }
+                                    val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
                                     if (locator != null) {
                                         highlightsList.add(HighlightData(locator, hUserId, hColor))
-                                        userIdsToFetch.add(hUserId)
                                     }
                                 } catch (e: Exception) {}
                             }
@@ -412,41 +470,26 @@ class ReaderViewModel(
                                     val hUserId = obj.optString("userId", uid)
                                     val content = obj.optString("content", "")
                                     val hColor = obj.optInt("color", 0x66FFFF00)
-                                    val locator = if (locJson != null) {
-                                        Locator.fromJSON(locJson)
-                                    } else {
-                                        Locator.fromJSON(obj)
-                                    }
+                                    val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
                                     if (locator != null) {
                                         notesList.add(NoteData(locator, hUserId, content, hColor))
-                                        userIdsToFetch.add(hUserId)
                                     }
                                 } catch (e: Exception) {}
                             }
-                        }
 
-                        // Fetch usernames for all unique user IDs
-                        val nameMap = _usernames.value.toMutableMap()
-                        userIdsToFetch.forEach { id ->
-                            if (!nameMap.containsKey(id)) {
-                                try {
-                                    val userSnapshot = firestore.collection("users").document(id).get().await()
-                                    val name = userSnapshot.getString("username") ?: "Unknown"
-                                    nameMap[id] = name
-                                } catch (e: Exception) {
-                                    nameMap[id] = "Unknown"
-                                }
+                            val nameMap = _usernames.value.toMutableMap()
+                            if (!nameMap.containsKey(uid)) {
+                                nameMap[uid] = userModel?.username ?: "Unknown"
+                                _usernames.value = nameMap
                             }
+                            _highlights.value = highlightsList
+                            _notes.value = notesList
+                            _groupProgress.value = emptyList() // No group progress in personal mode
+                        } catch (e: Exception) {
+                            Log.e("ReaderViewModel", "Failed to load personal annotations", e)
                         }
-                        _usernames.value = nameMap
-
-                    } catch (e: Exception) {
-                        Log.e("ReaderViewModel", "Failed to load annotations", e)
                     }
                 }
-                _highlights.value = highlightsList
-                _notes.value = notesList
-                Log.d("ReaderViewModel", "Total highlights loaded: ${highlightsList.size}, notes: ${notesList.size}")
             } else {
                 _error.value = "Book file not found at ${activeBook.filePath}"
             }
