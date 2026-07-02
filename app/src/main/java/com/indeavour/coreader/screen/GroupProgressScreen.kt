@@ -8,10 +8,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -22,6 +27,7 @@ import com.indeavour.coreader.model.firebase.GroupBook
 import com.indeavour.coreader.ui.theme.Teal
 import com.indeavour.coreader.viewmodel.GroupViewModel
 import com.indeavour.coreader.viewmodel.ReaderViewModel
+import com.google.firebase.auth.FirebaseAuth
 import org.json.JSONObject
 import org.readium.r2.shared.publication.Locator
 
@@ -32,6 +38,12 @@ fun GroupProgressScreen(onBack: () -> Unit) {
     val groupBooks by groupViewModel.groupBooks.collectAsState()
     val activeGroupId by groupViewModel.activeGroupId.collectAsState()
     val usernames by groupViewModel.usernames.collectAsState()
+
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var isSearchActive by rememberSaveable { mutableStateOf(false) }
+    var filterType by rememberSaveable { mutableStateOf("All") }
+    var showFilterDialog by remember { mutableStateOf(false) }
+    var displayMoreMenu by rememberSaveable { mutableStateOf(false) }
 
     // Trigger name fetching for all users in the book progression
     LaunchedEffect(groupBooks) {
@@ -45,35 +57,210 @@ fun GroupProgressScreen(onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Group Book Progress", color = MaterialTheme.colorScheme.secondary) },
+                title = { 
+                    if (isSearchActive) {
+                        TextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Search books...") },
+                            singleLine = true,
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+                                unfocusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+                                focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                                unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                                cursorColor = MaterialTheme.colorScheme.secondary,
+                                focusedTextColor = MaterialTheme.colorScheme.secondary,
+                                unfocusedTextColor = MaterialTheme.colorScheme.secondary
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        Text("Group Book Progress", color = MaterialTheme.colorScheme.secondary)
+                    }
+                },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.secondary)
+                    if (isSearchActive) {
+                        IconButton(onClick = { 
+                            isSearchActive = false
+                            searchQuery = ""
+                        }) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "Close Search",
+                                tint = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                    } else {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.secondary)
+                        }
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { displayMoreMenu = !displayMoreMenu }) {
+                        Icon(
+                            imageVector = Icons.Filled.MoreVert,
+                            contentDescription = "Open More",
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Teal)
             )
         }
     ) { padding ->
-        if (activeGroupId == null) {
-            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Text("No active group selected")
-            }
-        } else if (groupBooks.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Text("No books uploaded to this group yet")
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(padding),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // groupBooks is Map<BookKey, GroupBook>
-                items(groupBooks.keys.toList()) { bookKey ->
+        if (showFilterDialog) {
+            AlertDialog(
+                onDismissRequest = { showFilterDialog = false },
+                title = { Text("Filter Books", color = MaterialTheme.colorScheme.secondary) },
+                text = {
+                    Column {
+                        val filterOptions = listOf("All", "In Progress", "Unread", "Completed")
+                        filterOptions.forEach { type ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { 
+                                        filterType = type
+                                        showFilterDialog = false 
+                                    }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = filterType == type, 
+                                    onClick = null,
+                                    colors = RadioButtonDefaults.colors(selectedColor = Teal)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(type, color = MaterialTheme.colorScheme.onSurface)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showFilterDialog = false }) { 
+                        Text("Close", color = Teal) 
+                    }
+                },
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        }
+
+        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            val filteredKeys = remember(groupBooks, searchQuery, filterType) {
+                groupBooks.keys.filter { bookKey ->
                     val groupBook = groupBooks[bookKey]!!
-                    BookProgressItem(bookKey, groupBook, usernames)
+                    val sampleBook = groupBook.bookProgression.values.firstOrNull()?.get(bookKey)?.let { BookModel.fromAny(it) }
+                    val title = sampleBook?.title ?: ""
+                    val author = sampleBook?.author ?: ""
+                    
+                    val matchesSearch = title.contains(searchQuery, ignoreCase = true) || 
+                                      author.contains(searchQuery, ignoreCase = true)
+                    
+                    // For filtering, we might want to check the CURRENT user's progress or ANY user's progress?
+                    // Typically, these progress views show the book status. Let's base it on the current user if possible, 
+                    // or just any progression.
+                    val userProgress = groupBook.bookProgression[FirebaseAuth.getInstance().currentUser?.uid]
+                        ?.get(bookKey)?.let { BookModel.fromAny(it) }?.progress
+                    
+                    val progress = try {
+                        if (userProgress.isNullOrBlank()) 0f
+                        else {
+                            val json = JSONObject(userProgress)
+                            val locations = json.optJSONObject("locations")
+                            locations?.optDouble("totalProgression", 0.0)?.toFloat() ?: 0f
+                        }
+                    } catch (e: Exception) { 0f }
+
+                    val matchesFilter = when(filterType) {
+                        "In Progress" -> progress > 0.005f && progress < 0.995f
+                        "Unread" -> progress <= 0.005f
+                        "Completed" -> progress >= 0.995f
+                        else -> true
+                    }
+                    matchesSearch && matchesFilter
                 }
+            }
+
+            if (activeGroupId == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No active group selected")
+                }
+            } else if (groupBooks.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No books uploaded to this group yet")
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // groupBooks is Map<BookKey, GroupBook>
+                    items(filteredKeys) { bookKey ->
+                        val groupBook = groupBooks[bookKey]!!
+                        BookProgressItem(bookKey, groupBook, usernames)
+                    }
+                }
+            }
+
+            if (displayMoreMenu) {
+                ProgressMoreMenu(
+                    modifier = Modifier
+                        .width(200.dp)
+                        .align(Alignment.TopEnd)
+                        .padding(top = 8.dp, end = 8.dp),
+                    onSearchClick = {
+                        isSearchActive = true
+                        displayMoreMenu = false
+                    },
+                    onFilterClick = {
+                        showFilterDialog = true
+                        displayMoreMenu = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun ProgressMoreMenu(
+    modifier: Modifier,
+    onSearchClick: () -> Unit,
+    onFilterClick: () -> Unit
+) {
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 8.dp,
+        shadowElevation = 8.dp
+    ) {
+        Column(modifier = Modifier.padding(vertical = 8.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onSearchClick)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Search, contentDescription = null, tint = Teal, modifier = Modifier.size(24.dp))
+                Spacer(modifier = Modifier.width(16.dp))
+                Text("Search", style = MaterialTheme.typography.bodyLarge)
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onFilterClick)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.FilterList, contentDescription = null, tint = Teal, modifier = Modifier.size(24.dp))
+                Spacer(modifier = Modifier.width(16.dp))
+                Text("Filter", style = MaterialTheme.typography.bodyLarge)
             }
         }
     }
@@ -163,7 +350,10 @@ fun UserProgressRow(userId: String, bookModel: BookModel, username: String) {
         }
     }
 
-    val percentage = (progressValue * 100).toInt()
+    val percentageLabel = remember(progressValue) {
+        val p = (progressValue * 100).coerceIn(0f, 100f)
+        if (p > 99.5f) "100%" else "${kotlin.math.round(p).toInt()}%"
+    }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -176,7 +366,7 @@ fun UserProgressRow(userId: String, bookModel: BookModel, username: String) {
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                text = "$percentage%", 
+                text = percentageLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface
             )

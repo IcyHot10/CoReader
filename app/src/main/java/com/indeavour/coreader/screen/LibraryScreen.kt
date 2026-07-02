@@ -47,6 +47,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.TopAppBarDefaults
 import com.indeavour.coreader.model.firebase.UserModel
 import com.indeavour.coreader.model.firebase.GroupBook
@@ -75,13 +77,18 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -94,6 +101,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.imageResource
@@ -106,6 +114,7 @@ import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
 import androidx.credentials.exceptions.ClearCredentialException
 import com.google.firebase.auth.FirebaseAuth
+import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -145,6 +154,11 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
     val groupViewModel: GroupViewModel = viewModel()
     val activeGroupId by groupViewModel.activeGroupId.collectAsState()
     val groupBooks by groupViewModel.groupBooks.collectAsState()
+
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var isSearchActive by rememberSaveable { mutableStateOf(false) }
+    var filterType by rememberSaveable { mutableStateOf("All") }
+    var showFilterDialog by remember { mutableStateOf(false) }
 
     var books by remember {
         mutableStateOf(listOf<RoomBook>())
@@ -194,16 +208,49 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Teal,
                     titleContentColor = MaterialTheme.colorScheme.secondary),
-                title = { Text(if (isDeletionMode) "${selectedBookIds.size} Selected" else "CoReader Library") },
+                title = { 
+                    if (isSearchActive) {
+                        TextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Search books...") },
+                            singleLine = true,
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+                                unfocusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+                                focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                                unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                                cursorColor = MaterialTheme.colorScheme.secondary,
+                                focusedTextColor = MaterialTheme.colorScheme.secondary,
+                                unfocusedTextColor = MaterialTheme.colorScheme.secondary
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        Text(if (isDeletionMode) "${selectedBookIds.size} Selected" else "CoReader Library")
+                    }
+                },
                 navigationIcon = {
-                    if (isDeletionMode) {
+                    if (isSearchActive) {
+                        IconButton(onClick = { 
+                            isSearchActive = false
+                            searchQuery = ""
+                        }) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "Close Search",
+                                tint = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                    } else if (isDeletionMode) {
                         IconButton(onClick = { 
                             isDeletionMode = false 
                             selectedBookIds = emptySet()
                         }) {
                             Icon(
                                 imageVector = Icons.Filled.Close,
-                                contentDescription = "Exit Deletion Mode"
+                                contentDescription = "Exit Deletion Mode",
+                                tint = MaterialTheme.colorScheme.secondary
                             )
                         }
                     } else {
@@ -214,7 +261,8 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                         }) {
                             Icon(
                                 imageVector = Icons.Filled.Menu,
-                                contentDescription = "Open Burger Menu"
+                                contentDescription = "Open Burger Menu",
+                                tint = MaterialTheme.colorScheme.secondary
                             )
                         }
                     }
@@ -245,6 +293,26 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                                     contentDescription = "Delete Selected"
                                 )
                             }
+
+                            IconButton(onClick = {
+                                scope.launch(Dispatchers.IO) {
+                                    selectedBookIds.forEach { id ->
+                                        val book = database.bookDao().getById(id)
+                                        book?.let {
+                                            database.bookDao().setFavourite(id, !it.isFavourite)
+                                        }
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        isDeletionMode = false
+                                        selectedBookIds = emptySet()
+                                    }
+                                }
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Filled.Favorite,
+                                    contentDescription = "Toggle Favourite"
+                                )
+                            }
                         }
                     } else {
                         IconButton(onClick = { displayMoreMenu = !displayMoreMenu }) {
@@ -269,10 +337,83 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
             }
         }) {
             innerPadding ->
+            if (showFilterDialog) {
+                AlertDialog(
+                    onDismissRequest = { showFilterDialog = false },
+                    title = { Text("Filter Books", color = MaterialTheme.colorScheme.secondary) },
+                    text = {
+                        Column {
+                            val filterOptions = listOf(
+                                "All", 
+                                "Favourites",
+                                "In Group", 
+                                "Not in Group", 
+                                "In Progress", 
+                                "Unread", 
+                                "Completed"
+                            )
+                            filterOptions.forEach { type ->
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable { 
+                                            filterType = type
+                                            showFilterDialog = false 
+                                        }
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    RadioButton(
+                                        selected = filterType == type, 
+                                        onClick = null,
+                                        colors = RadioButtonDefaults.colors(selectedColor = Teal)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(type, color = MaterialTheme.colorScheme.onSurface)
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { showFilterDialog = false }) { 
+                            Text("Close", color = Teal) 
+                        }
+                    },
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            }
+
             Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+                val filteredBooks = remember(books, searchQuery, filterType, groupBooks) {
+                    books.filter { book ->
+                        val matchesSearch = book.title.contains(searchQuery, ignoreCase = true) || 
+                                          book.author.contains(searchQuery, ignoreCase = true)
+                        
+                        val bookKey = "${book.title}_${book.author}"
+                        val progress = try {
+                            if (book.progression.isNullOrBlank()) 0f
+                            else {
+                                val json = JSONObject(book.progression)
+                                val locations = json.optJSONObject("locations")
+                                locations?.optDouble("totalProgression", 0.0)?.toFloat() ?: 0f
+                            }
+                        } catch (e: Exception) { 0f }
+
+                        val matchesFilter = when(filterType) {
+                            "Favourites" -> book.isFavourite
+                            "In Group" -> groupBooks.containsKey(bookKey)
+                            "Not in Group" -> !groupBooks.containsKey(bookKey)
+                            "In Progress" -> progress > 0.005f && progress < 0.995f
+                            "Unread" -> progress <= 0.005f
+                            "Completed" -> progress >= 0.995f
+                            else -> true
+                        }
+                        matchesSearch && matchesFilter
+                    }
+                }
                 val configuration = LocalConfiguration.current
                 val columns = (configuration.screenWidthDp / 120).coerceAtLeast(1)
-                val bookRows = remember(books, columns) { books.chunked(columns) }
+                val bookRows = remember(filteredBooks, columns) { filteredBooks.chunked(columns) }
 
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -350,7 +491,23 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                         HorizontalDivider(thickness = 10.dp, color = Teal, modifier = Modifier.padding(top = 8.dp))
                     }
                 }
-                if (displayMoreMenu) MoreMenu(Modifier.width(200.dp).height(150.dp).align(Alignment.TopEnd), toggleMoreMenu)
+                if (displayMoreMenu) {
+                    MoreMenu(
+                        modifier = Modifier
+                            .width(220.dp)
+                            .align(Alignment.TopEnd)
+                            .padding(top = 8.dp, end = 8.dp),
+                        toggle = toggleMoreMenu,
+                        onSearchClick = {
+                            isSearchActive = true
+                            displayMoreMenu = false
+                        },
+                        onFilterClick = {
+                            showFilterDialog = true
+                            displayMoreMenu = false
+                        }
+                    )
+                }
             }
         }
     }
@@ -433,6 +590,20 @@ fun BookCard(
                         modifier = Modifier.size(20.dp)
                     )
                 }
+            }
+
+            if (book.isFavourite) {
+                Icon(
+                    imageVector = Icons.Filled.Favorite,
+                    contentDescription = "Favourite",
+                    tint = Teal,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(4.dp)
+                        .size(24.dp)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f), CircleShape)
+                        .padding(2.dp)
+                )
             }
 
             if (isSelected) {
@@ -608,8 +779,13 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
 }
 
 @Composable
-fun MoreMenu(modifier: Modifier, toggle: () -> Unit){
-    var context = LocalContext.current
+fun MoreMenu(
+    modifier: Modifier, 
+    toggle: () -> Unit,
+    onSearchClick: () -> Unit,
+    onFilterClick: () -> Unit
+){
+    val context = LocalContext.current
     val database by lazy { AppRoomDatabase.getDatabase(context = context) }
     val userViewModel: UserViewModel = viewModel()
     val user by userViewModel.user.collectAsState()
@@ -690,20 +866,59 @@ fun MoreMenu(modifier: Modifier, toggle: () -> Unit){
                         }
                     }
                 }
-                toggle()
             }
+            toggle()
         }
     )
 
-    Column(modifier = modifier.fillMaxSize().background(color = MaterialTheme.colorScheme.primaryContainer)) {
-        val textButtonModifier = Modifier.fillMaxWidth().height(50.dp).align(Alignment.CenterHorizontally)
-        Button(onClick =
-            {
-                launcher.launch(arrayOf("application/epub+zip"))
-            },
-            modifier = textButtonModifier, shape = RectangleShape) { Text("Import Books", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
-        Button(onClick = {}, modifier = textButtonModifier, shape = RectangleShape) { Text("Search", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
-        Button(onClick = {}, modifier = textButtonModifier, shape = RectangleShape) { Text("Filter", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface) }
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 8.dp,
+        shadowElevation = 8.dp
+    ) {
+        Column(modifier = Modifier.padding(vertical = 8.dp)) {
+            MoreMenuItem(
+                icon = Icons.Default.CloudUpload,
+                text = "Import Books",
+                onClick = { launcher.launch(arrayOf("application/epub+zip")) }
+            )
+            MoreMenuItem(
+                icon = Icons.Default.Search,
+                text = "Search",
+                onClick = onSearchClick
+            )
+            MoreMenuItem(
+                icon = Icons.Default.FilterList,
+                text = "Filter",
+                onClick = onFilterClick
+            )
+        }
+    }
+}
+
+@Composable
+fun MoreMenuItem(icon: ImageVector, text: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = Teal,
+            modifier = Modifier.size(24.dp)
+        )
+        Spacer(modifier = Modifier.width(16.dp))
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface
+        )
     }
 }
 

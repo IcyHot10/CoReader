@@ -49,4 +49,7 @@ interface RoomBookDao {
 
     @Query("UPDATE book SET is_deleted = 1, file_path = '' WHERE id = :id")
     suspend fun markAsDeleted(id: Int)
+
+    @Query("UPDATE book SET is_favourite = :isFavourite WHERE id = :id")
+    suspend fun setFavourite(id: Int, isFavourite: Boolean)
 }

@@ -145,11 +145,13 @@ class ReaderViewModel(
             } else ""
         }
 
-        val progression = locator.locations.totalProgression?.toFloat() ?: (pageIndex.toFloat() / totalPages.coerceAtLeast(1))
+        val progression = locator.locations.totalProgression?.toFloat() ?: (pageIndex.toFloat() / (totalPages - 1).coerceAtLeast(1))
+        val percentage = (progression * 100).coerceIn(0f, 100f)
+        
         _progress.value = ReadingProgress(
             value = progression,
             pageLabel = "Page ${pageIndex + 1} of $totalPages",
-            percentageLabel = "${(progression * 100).toInt()}%",
+            percentageLabel = if (percentage > 99.5f) "100%" else "${kotlin.math.round(percentage).toInt()}%",
             chapterLabel = chapterLabel
         )
 

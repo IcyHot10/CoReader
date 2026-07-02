@@ -54,16 +54,18 @@ fun AppNavigation(){
             )
         }
         composable("group") {
-            GroupScreen(onBack = { navController.popBackStack() })
+            GroupScreen(onBack = { 
+                navController.popBackStack("library", inclusive = false)
+            })
         }
         composable("progress") {
-            GroupProgressScreen(onBack = { navController.popBackStack() })
+            GroupProgressScreen(onBack = { 
+                navController.popBackStack("library", inclusive = false)
+            })
         }
         composable("book") {
             BookScreen(routeToLibrary = {
-                navController.navigate("library") {
-                    popUpTo("library") { inclusive = true }
-                }
+                navController.popBackStack("library", inclusive = false)
             })
         }
     }
