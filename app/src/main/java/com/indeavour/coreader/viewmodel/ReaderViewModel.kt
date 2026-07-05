@@ -81,6 +81,9 @@ class ReaderViewModel(
     private val _fontSize = MutableStateFlow(100f)
     val fontSize: StateFlow<Float> = _fontSize
 
+    private val _theme = MutableStateFlow("system")
+    val theme: StateFlow<String> = _theme
+
     fun setSelectedHighlightColor(color: Int) {
         _selectedHighlightColor.value = color
         
@@ -100,7 +103,17 @@ class ReaderViewModel(
         _fontSize.value = size
         viewModelScope.launch {
             val database = AppRoomDatabase.getDatabase(getApplication())
-            database.userPreferencesDao().insertOrUpdate(UserPreferences(fontSize = size))
+            val currentPrefs = database.userPreferencesDao().getPreferences().firstOrNull() ?: UserPreferences()
+            database.userPreferencesDao().insertOrUpdate(currentPrefs.copy(fontSize = size))
+        }
+    }
+
+    fun setTheme(theme: String) {
+        _theme.value = theme
+        viewModelScope.launch {
+            val database = AppRoomDatabase.getDatabase(getApplication())
+            val currentPrefs = database.userPreferencesDao().getPreferences().firstOrNull() ?: UserPreferences()
+            database.userPreferencesDao().insertOrUpdate(currentPrefs.copy(theme = theme))
         }
     }
 
@@ -490,6 +503,7 @@ class ReaderViewModel(
             val prefs = database.userPreferencesDao().getPreferences().firstOrNull()
             prefs?.let {
                 _fontSize.value = it.fontSize
+                _theme.value = it.theme
             }
 
             // If it's a different book OR the resolved active group has changed, clear state immediately

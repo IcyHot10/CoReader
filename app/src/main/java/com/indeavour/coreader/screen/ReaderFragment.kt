@@ -16,9 +16,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Brightness4
+import androidx.compose.material.icons.filled.BrightnessAuto
+import androidx.compose.material.icons.filled.BrightnessHigh
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -111,7 +115,13 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     ): View {
         return ComposeView(requireContext()).apply {
             setContent {
-                CoReaderTheme {
+                val themePreference by viewModel.theme.collectAsState()
+                val isDark = when(themePreference) {
+                    "light" -> false
+                    "dark" -> true
+                    else -> isSystemInDarkTheme()
+                }
+                CoReaderTheme(darkTheme = isDark) {
                     ReaderScreen()
                 }
             }
@@ -520,6 +530,30 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                                     )
                                                 }
                                             }
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.Center,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                val themePreference by viewModel.theme.collectAsState()
+                                                val themeOptions = listOf(
+                                                    Triple("system", Icons.Default.BrightnessAuto, "System"),
+                                                    Triple("light", Icons.Default.BrightnessHigh, "Light"),
+                                                    Triple("dark", Icons.Default.Brightness4, "Dark")
+                                                )
+
+                                                themeOptions.forEach { (theme, icon, label) ->
+                                                    IconButton(
+                                                        onClick = { viewModel.setTheme(theme) },
+                                                        colors = IconButtonDefaults.iconButtonColors(
+                                                            contentColor = if (themePreference == theme) colorScheme.secondary else colorScheme.secondary.copy(alpha = 0.5f)
+                                                        )
+                                                    ) {
+                                                        Icon(icon, contentDescription = label)
+                                                    }
+                                                }
+                                            }
+
                                             Spacer(modifier = Modifier.height(16.dp))
                                             Row(
                                                 modifier = Modifier.fillMaxWidth(),
