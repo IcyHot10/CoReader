@@ -14,6 +14,7 @@ import com.indeavour.coreader.screen.GroupScreen
 import com.indeavour.coreader.screen.GroupProgressScreen
 import com.indeavour.coreader.screen.LibraryScreen
 import com.indeavour.coreader.screen.LoginScreen
+import com.indeavour.coreader.screen.StatsScreen
 import com.indeavour.coreader.ui.theme.CoReaderTheme
 import androidx.fragment.app.FragmentActivity
 
@@ -50,7 +51,8 @@ fun AppNavigation(){
                 },
                 routeToBook = { navController.navigate("book") },
                 routeToGroup = { navController.navigate("group") },
-                routeToProgress = { navController.navigate("progress") }
+                routeToProgress = { navController.navigate("progress") },
+                routeToStats = { navController.navigate("stats") }
             )
         }
         composable("group") {
@@ -60,6 +62,11 @@ fun AppNavigation(){
         }
         composable("progress") {
             GroupProgressScreen(onBack = { 
+                navController.popBackStack("library", inclusive = false)
+            })
+        }
+        composable("stats") {
+            StatsScreen(onBack = {
                 navController.popBackStack("library", inclusive = false)
             })
         }

@@ -11,6 +11,9 @@ import com.indeavour.coreader.AppRoomDatabase
 import com.indeavour.coreader.model.firebase.BookModel
 import com.indeavour.coreader.model.firebase.GroupBook
 import com.indeavour.coreader.model.firebase.UserModel
+import com.indeavour.coreader.model.firebase.UserStats
+import com.indeavour.coreader.model.firebase.UserStatsDocument
+import com.indeavour.coreader.model.room.ReadingActivity
 import com.indeavour.coreader.model.room.UserPreferences
 import com.indeavour.coreader.repository.ReaderRepository
 import com.google.firebase.auth.FirebaseAuth
@@ -127,6 +130,173 @@ class ReaderViewModel(
     private var groupBookListener: com.google.firebase.firestore.ListenerRegistration? = null
 
     private var lastLocator: Locator? = null
+    private var sessionStartTime: Long = 0
+    private var lastTickTime: Long = 0
+    private var secondsAccumulator: Long = 0
+    private var wasCompletedAtStart: Boolean = false
+
+    private fun startReadingSession(initialProgress: Float) {
+        val now = System.currentTimeMillis()
+        sessionStartTime = now
+        lastTickTime = now
+        secondsAccumulator = 0
+        wasCompletedAtStart = initialProgress >= 0.995f
+    }
+
+    private fun syncReadingProgress(isCompletedNow: Boolean, forceSync: Boolean = false) {
+        if (lastTickTime == 0L) return // Session not started
+
+        val now = System.currentTimeMillis()
+        val deltaSeconds = (now - lastTickTime) / 1000
+        
+        if (deltaSeconds > 0) {
+            secondsAccumulator += deltaSeconds
+            lastTickTime = now
+        }
+        
+        val newlyCompleted = !wasCompletedAtStart && isCompletedNow
+
+        // Only trigger heavy updates if forced (e.g. leaving screen) or if we have a completion event
+        if ((forceSync && secondsAccumulator > 0) || newlyCompleted) {
+            val secondsToSave = secondsAccumulator
+            secondsAccumulator = 0
+            if (newlyCompleted) wasCompletedAtStart = true
+            
+            val bookId = loadedBookId ?: return
+            val uid = auth.currentUser?.uid ?: return
+            
+            viewModelScope.launch(Dispatchers.IO) {
+                // 1. Save to Local Room
+                val database = AppRoomDatabase.getDatabase(getApplication())
+                database.readingActivityDao().insert(ReadingActivity(
+                    bookId = bookId,
+                    timestamp = now,
+                    durationSeconds = secondsToSave,
+                    isCompletedEvent = newlyCompleted
+                ))
+
+                if (newlyCompleted) {
+                    database.bookDao().setCompletedTimestamp(bookId, now)
+                }
+
+                // 2. Push to Firestore for cross-device sync
+                if (uid != null) {
+                    try {
+                        Log.d("ReaderViewModel", "Starting userStats sync for user: $uid. Seconds: $secondsToSave")
+                        val statsRef = firestore.collection("userStats").document(uid)
+                        val userRef = firestore.collection("users").document(uid)
+                        
+                        firestore.runTransaction { transaction ->
+                            val snapshot = transaction.get(statsRef)
+                            val statsDoc = if (snapshot.exists()) {
+                                snapshot.toObject(UserStatsDocument::class.java) ?: UserStatsDocument(userId = uid)
+                            } else {
+                                UserStatsDocument(userId = uid)
+                            }
+
+                            // Also update the BookModel completed timestamp if needed
+                            if (newlyCompleted) {
+                                val userDoc = transaction.get(userRef)
+                                val userModel = userDoc.toObject(UserModel::class.java)
+                                if (userModel != null) {
+                                    val pub = _publication.value
+                                    val authorName = pub?.metadata?.authors?.firstOrNull()?.name ?: "Unknown Author"
+                                    val bookKey = "${pub?.metadata?.title}_$authorName"
+                                    val userBooks = userModel.books.toMutableMap()
+                                    val book = userBooks[bookKey]
+                                    if (book != null && book.completedTimestamp == 0L) {
+                                        userBooks[bookKey] = book.copy(completedTimestamp = now)
+                                        transaction.update(userRef, "books", userBooks)
+                                    }
+                                }
+                            }
+                            
+                            val calendar = java.util.Calendar.getInstance()
+                            val yearKey = calendar.get(java.util.Calendar.YEAR).toString()
+                            val todayMillis = calendar.apply {
+                                set(java.util.Calendar.HOUR_OF_DAY, 0)
+                                set(java.util.Calendar.MINUTE, 0)
+                                set(java.util.Calendar.SECOND, 0)
+                                set(java.util.Calendar.MILLISECOND, 0)
+                            }.timeInMillis
+
+                            // Update Yearly Stats
+                            val currentYearlyStats = statsDoc.yearlyStats[yearKey] ?: UserStats()
+                            
+                            // Update Streak logic
+                            val lastReading = currentYearlyStats.lastReadingTimestamp
+                            var newStreak = currentYearlyStats.currentStreak
+                            if (lastReading > 0) {
+                                val lastReadingCal = java.util.Calendar.getInstance().apply { timeInMillis = lastReading }
+                                lastReadingCal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+                                lastReadingCal.set(java.util.Calendar.MINUTE, 0)
+                                lastReadingCal.set(java.util.Calendar.SECOND, 0)
+                                lastReadingCal.set(java.util.Calendar.MILLISECOND, 0)
+                                val lastReadingDay = lastReadingCal.timeInMillis
+                                
+                                val yesterday = todayMillis - java.util.concurrent.TimeUnit.DAYS.toMillis(1)
+                                
+                                when {
+                                    lastReadingDay == todayMillis -> { /* Already read today */ }
+                                    lastReadingDay == yesterday -> newStreak++
+                                    else -> newStreak = 1
+                                }
+                            } else {
+                                newStreak = 1
+                            }
+
+                            val updatedYearlyStats = currentYearlyStats.copy(
+                                secondsRead = currentYearlyStats.secondsRead + secondsToSave,
+                                booksCompleted = currentYearlyStats.booksCompleted + (if (newlyCompleted) 1 else 0),
+                                currentStreak = newStreak,
+                                maxStreak = maxOf(currentYearlyStats.maxStreak, newStreak),
+                                lastReadingTimestamp = now
+                            )
+                            
+                            val updatedYearlyMap = statsDoc.yearlyStats.toMutableMap()
+                            updatedYearlyMap[yearKey] = updatedYearlyStats
+                            
+                            // Also update lifetime
+                            val updatedLifetime = statsDoc.lifetimeStats.copy(
+                                secondsRead = statsDoc.lifetimeStats.secondsRead + secondsToSave,
+                                booksCompleted = statsDoc.lifetimeStats.booksCompleted + (if (newlyCompleted) 1 else 0),
+                                currentStreak = newStreak,
+                                maxStreak = maxOf(statsDoc.lifetimeStats.maxStreak, newStreak),
+                                lastReadingTimestamp = now
+                            )
+
+                            transaction.set(statsRef, statsDoc.copy(
+                                yearlyStats = updatedYearlyMap,
+                                lifetimeStats = updatedLifetime
+                            ))
+                            Log.d("ReaderViewModel", "Transaction logic prepared for $uid")
+                        }.await()
+
+                        Log.d("ReaderViewModel", "userStats sync successful for $uid")
+
+                        // Also log raw activity for historical record
+                        firestore.collection("users").document(uid).collection("readingActivity").add(
+                            ReadingActivity(
+                                bookId = bookId,
+                                timestamp = now,
+                                durationSeconds = secondsToSave,
+                                isCompletedEvent = newlyCompleted
+                            )
+                        ).await()
+
+                    } catch (e: Exception) {
+                        Log.e("ReaderViewModel", "Failed to sync reading activity to Firestore", e)
+                    }
+                }
+            }
+        }
+    }
+
+    fun endReadingSession() {
+        val currentProgress = _progress.value.value
+        val isCompletedNow = currentProgress >= 0.995f
+        syncReadingProgress(isCompletedNow, forceSync = true)
+    }
 
     fun setBookReady(ready: Boolean) {
         _isBookReady.value = ready
@@ -147,6 +317,7 @@ class ReaderViewModel(
 
         val progression = locator.locations.totalProgression?.toFloat() ?: (pageIndex.toFloat() / (totalPages - 1).coerceAtLeast(1))
         val percentage = (progression * 100).coerceIn(0f, 100f)
+        val isCompletedNow = progression >= 0.995f
         
         _progress.value = ReadingProgress(
             value = progression,
@@ -154,6 +325,9 @@ class ReaderViewModel(
             percentageLabel = if (percentage > 99.5f) "100%" else "${kotlin.math.round(percentage).toInt()}%",
             chapterLabel = chapterLabel
         )
+
+        // Append reading time and sync completion status
+        syncReadingProgress(isCompletedNow, forceSync = false)
 
         // Update the initial locator so that if the fragment is recreated (e.g. theme change),
         // it stays on the current page.
@@ -187,10 +361,31 @@ class ReaderViewModel(
                     val userBooks = userModel.books.toMutableMap()
                     val userBook = userBooks[bookKey] ?: BookModel(
                         title = pub.metadata.title ?: "",
-                        author = authorName
+                        author = authorName,
+                        addedTimestamp = System.currentTimeMillis() // Fallback if not exists
                     )
-                    userBooks[bookKey] = userBook.copy(progress = progressionJson)
+                    
+                    val currentProgress = _progress.value.value
+                    val isCompletedNow = currentProgress >= 0.995f
+                    val finalCompletedTimestamp = if (isCompletedNow && userBook.completedTimestamp == 0L) {
+                        System.currentTimeMillis()
+                    } else {
+                        userBook.completedTimestamp
+                    }
+
+                    userBooks[bookKey] = userBook.copy(
+                        progress = progressionJson,
+                        completedTimestamp = finalCompletedTimestamp
+                    )
                     userRef.update("books", userBooks).await()
+
+                    // Update local Room database if we just completed it here
+                    if (isCompletedNow && finalCompletedTimestamp > 0) {
+                        viewModelScope.launch {
+                            val database = AppRoomDatabase.getDatabase(getApplication())
+                            database.bookDao().setCompletedTimestamp(loadedBookId ?: 0, finalCompletedTimestamp)
+                        }
+                    }
 
                     // If in an active group, also update the group's progress model
                     if (effectiveGroupId != null) {
@@ -207,14 +402,20 @@ class ReaderViewModel(
                         val userBooks = groupProgression[uid] ?: mutableMapOf()
                         val existingInGroup = BookModel.fromAny(userBooks[bookKey])
                         val groupUserBook = if (existingInGroup != null && existingInGroup.title == pub.metadata.title && existingInGroup.author == authorName) {
-                            existingInGroup
+                            existingInGroup.copy(
+                                progress = progressionJson,
+                                completedTimestamp = if (isCompletedNow && existingInGroup.completedTimestamp == 0L) finalCompletedTimestamp else existingInGroup.completedTimestamp
+                            )
                         } else {
                             BookModel(
                                 title = pub.metadata.title ?: "",
-                                author = authorName
+                                author = authorName,
+                                progress = progressionJson,
+                                addedTimestamp = userBook.addedTimestamp,
+                                completedTimestamp = if (isCompletedNow) finalCompletedTimestamp else 0L
                             )
                         }
-                        userBooks[bookKey] = groupUserBook.copy(progress = progressionJson)
+                        userBooks[bookKey] = groupUserBook
                         groupProgression[uid] = userBooks
 
                         if (groupBookDoc.exists()) {
@@ -233,6 +434,7 @@ class ReaderViewModel(
     override fun onCleared() {
         super.onCleared()
         groupBookListener?.remove()
+        endReadingSession()
         saveProgressionToFirestore()
     }
 
@@ -293,6 +495,9 @@ class ReaderViewModel(
             // If it's a different book OR the resolved active group has changed, clear state immediately
             if (activeBook.id != loadedBookId || resolvedGroupId != loadedGroupId) {
                 Log.d("ReaderViewModel", "Switching book/group: book ${loadedBookId}->${activeBook.id}, group ${loadedGroupId}->${resolvedGroupId}")
+                if (loadedBookId != null) {
+                    endReadingSession()
+                }
                 groupBookListener?.remove()
                 groupBookListener = null
                 _publication.value = null
@@ -304,7 +509,9 @@ class ReaderViewModel(
                 _notes.value = emptyList()
                 loadedGroupId = resolvedGroupId
             } else if (_publication.value != null) {
-                Log.d("ReaderViewModel", "Book ${activeBook.id} already loaded in group $resolvedGroupId, skipping")
+                Log.d("ReaderViewModel", "Book ${activeBook.id} already loaded, resuming session")
+                val currentProgress = _progress.value.value
+                startReadingSession(currentProgress)
                 return@launch
             }
 
@@ -344,6 +551,15 @@ class ReaderViewModel(
                     null
                 }
 
+                val initialProgress = progressionToUse?.let {
+                    try {
+                        val json = org.json.JSONObject(it)
+                        val locations = json.optJSONObject("locations")
+                        locations?.optDouble("totalProgression", 0.0)?.toFloat() ?: 0f
+                    } catch (e: Exception) { 0f }
+                } ?: 0f
+
+                startReadingSession(initialProgress)
                 openBook(bookFile, progression = progressionToUse)
 
                 // Set up real-time listener for group progress and annotations
@@ -544,7 +760,8 @@ class ReaderViewModel(
                         } else {
                             BookModel(
                                 title = pub.metadata.title ?: "",
-                                author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
+                                author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author",
+                                addedTimestamp = System.currentTimeMillis()
                             )
                         }
 
@@ -623,7 +840,8 @@ class ReaderViewModel(
                         } else {
                             BookModel(
                                 title = pub.metadata.title ?: "",
-                                author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
+                                author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author",
+                                addedTimestamp = System.currentTimeMillis()
                             )
                         }
 
@@ -641,7 +859,8 @@ class ReaderViewModel(
                         val books = userModel.books.toMutableMap()
                         val userBook = books[bookKey] ?: BookModel(
                             title = pub.metadata.title ?: "",
-                            author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
+                            author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author",
+                            addedTimestamp = System.currentTimeMillis()
                         )
                         val currentNotes = userBook.notes.toMutableList()
                         currentNotes.add(noteEntry)

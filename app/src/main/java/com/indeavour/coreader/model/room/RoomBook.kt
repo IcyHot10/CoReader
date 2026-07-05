@@ -16,5 +16,7 @@ data class RoomBook(
     @ColumnInfo(name = "uri") val uri: String,
     @ColumnInfo(name = "progression") val progression: String? = null,
     @ColumnInfo(name = "is_active") val isActive: Boolean = false,
-    @ColumnInfo(name = "is_deleted") val isDeleted: Boolean = false
+    @ColumnInfo(name = "is_deleted") val isDeleted: Boolean = false,
+    @ColumnInfo(name = "added_timestamp") val addedTimestamp: Long = 0,
+    @ColumnInfo(name = "completed_timestamp") val completedTimestamp: Long = 0
 )

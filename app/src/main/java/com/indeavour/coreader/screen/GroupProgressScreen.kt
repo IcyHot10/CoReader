@@ -159,9 +159,6 @@ fun GroupProgressScreen(onBack: () -> Unit) {
                     val matchesSearch = title.contains(searchQuery, ignoreCase = true) || 
                                       author.contains(searchQuery, ignoreCase = true)
                     
-                    // For filtering, we might want to check the CURRENT user's progress or ANY user's progress?
-                    // Typically, these progress views show the book status. Let's base it on the current user if possible, 
-                    // or just any progression.
                     val userProgress = groupBook.bookProgression[FirebaseAuth.getInstance().currentUser?.uid]
                         ?.get(bookKey)?.let { BookModel.fromAny(it) }?.progress
                     
@@ -181,6 +178,12 @@ fun GroupProgressScreen(onBack: () -> Unit) {
                         else -> true
                     }
                     matchesSearch && matchesFilter
+                }.sortedByDescending { bookKey ->
+                    // Find the earliest added timestamp among all members for this book to determine when it was "added to group"
+                    val groupBook = groupBooks[bookKey]!!
+                    groupBook.bookProgression.values.mapNotNull { 
+                        BookModel.fromAny(it[bookKey])?.addedTimestamp 
+                    }.filter { it > 0 }.minOrNull() ?: 0L
                 }
             }
 
@@ -270,11 +273,25 @@ fun ProgressMoreMenu(
 fun BookProgressItem(bookKey: String, groupBook: GroupBook, usernames: Map<String, String>) {
     var expanded by remember { mutableStateOf(false) }
     
-    val membersInThisBook = groupBook.bookProgression.keys.mapNotNull { userId ->
-        groupBook.getBookModel(userId, bookKey)?.let { userId to it }
-    }.toMap()
+    val sortedMembers = remember(groupBook, bookKey) {
+        groupBook.bookProgression.keys.mapNotNull { userId ->
+            groupBook.getBookModel(userId, bookKey)?.let { bookModel ->
+                val progressValue = try {
+                    if (bookModel.progress.isBlank()) 0f
+                    else {
+                        val json = JSONObject(bookModel.progress)
+                        val locations = json.optJSONObject("locations")
+                        locations?.optDouble("totalProgression", 0.0)?.toFloat() ?: 0f
+                    }
+                } catch (e: Exception) { 0f }
+                Triple(userId, bookModel, progressValue)
+            }
+        }.sortedWith(compareByDescending<Triple<String, BookModel, Float>> { it.third }
+            .thenBy { if (it.third >= 0.995f) it.second.completedTimestamp else Long.MAX_VALUE }
+        )
+    }
     
-    val sampleBook = membersInThisBook.values.firstOrNull()
+    val sampleBook = sortedMembers.firstOrNull()?.second
     val title = sampleBook?.title ?: "Unknown Title"
     val author = sampleBook?.author ?: "Unknown Author"
 
@@ -313,16 +330,14 @@ fun BookProgressItem(bookKey: String, groupBook: GroupBook, usernames: Map<Strin
 
             AnimatedVisibility(visible = expanded) {
                 Column(modifier = Modifier.padding(top = 16.dp)) {
-                    if (membersInThisBook.isEmpty()) {
+                    if (sortedMembers.isEmpty()) {
                         Text("No progress recorded for this book", style = MaterialTheme.typography.bodySmall)
                     }
 
-                    membersInThisBook.forEach { (userId, bookModel) ->
-                        // Show "User [ID]" while loading, but the fetchUsername logic in GroupViewModel
-                        // should be populating the 'usernames' map automatically.
+                    sortedMembers.forEachIndexed { index, (userId, bookModel, _) ->
                         val displayName = usernames[userId] ?: "User $userId"
                         UserProgressRow(userId, bookModel, displayName)
-                        if (membersInThisBook.keys.toList().last() != userId) {
+                        if (index < sortedMembers.size - 1) {
                             HorizontalDivider(
                                 modifier = Modifier.padding(vertical = 8.dp), 
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)

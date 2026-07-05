@@ -696,6 +696,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
     override fun onPause() {
         super.onPause()
+        viewModel.endReadingSession()
         viewModel.saveProgressionToFirestore()
     }
 

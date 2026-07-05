@@ -85,6 +85,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.LineAxis
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -144,7 +145,7 @@ import kotlin.coroutines.CoroutineContext
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit){
+fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit, routeToStats: () -> Unit){
     val context = LocalContext.current
     val database by lazy { AppRoomDatabase.getDatabase(context = context) }
     val scope = rememberCoroutineScope()
@@ -199,7 +200,7 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                 modifier = Modifier.width(325.dp),
                 drawerContainerColor = MaterialTheme.colorScheme.primaryContainer
             ) {
-                SideMenuContent(user, userViewModel, routeToLogin, routeToGroup, routeToProgress)
+                SideMenuContent(user, userViewModel, routeToLogin, routeToGroup, routeToProgress, routeToStats)
             }
         }
     ) {
@@ -573,7 +574,9 @@ fun BookCard(
                         val bookModel = user?.books?.get(bookKey) ?: BookModel(
                             title = book.title,
                             author = book.author,
-                            progress = book.progression ?: "0"
+                            progress = book.progression ?: "0",
+                            addedTimestamp = book.addedTimestamp,
+                            completedTimestamp = book.completedTimestamp
                         )
                         onUpload(bookModel)
                     },
@@ -627,7 +630,7 @@ fun BookCard(
 }
 
 @Composable
-fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit){
+fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit, routeToStats: () -> Unit){
     val auth = FirebaseAuth.getInstance()
     val context = LocalContext.current
     var showEditDialog by remember { mutableStateOf(false) }
@@ -728,7 +731,7 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
                 label = { Text("View Group Book Progress") },
                 selected = false,
                 onClick = routeToProgress,
-                icon = { Icon(Icons.Default.BarChart, contentDescription = null) },
+                icon = { Icon(Icons.Default.LineAxis, contentDescription = null) },
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 colors = NavigationDrawerItemDefaults.colors(
                     unselectedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
@@ -736,10 +739,10 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
             )
 
             NavigationDrawerItem(
-                label = { Text("View To Read List") },
+                label = { Text("View Reading Stats") },
                 selected = false,
-                onClick = {},
-                icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
+                onClick = routeToStats,
+                icon = { Icon(Icons.Default.BarChart, contentDescription = null) },
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 colors = NavigationDrawerItemDefaults.colors(
                     unselectedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
@@ -848,6 +851,7 @@ fun MoreMenu(
                                     }
                                 }
                             } else {
+                                val now = System.currentTimeMillis()
                                 database.bookDao().insert(RoomBook(
                                     title = title,
                                     author = author,
@@ -855,9 +859,10 @@ fun MoreMenu(
                                     filePath = destFile.absolutePath,
                                     isFavourite = false,
                                     uri = uri.toString(),
-                                    progression = progress
+                                    progression = progress,
+                                    addedTimestamp = now
                                 ))
-                                userViewModel.addBook(BookModel(title, author, progress), { success, message ->
+                                userViewModel.addBook(BookModel(title, author, progress, addedTimestamp = now), { success, message ->
                                     CoroutineScope(Dispatchers.Main).launch {
                                         AppUtils.showToast(context, message)
                                     }
@@ -925,5 +930,5 @@ fun MoreMenuItem(icon: ImageVector, text: String, onClick: () -> Unit) {
 @Preview
 @Composable
 fun LibraryScreenPreview(){
-    LibraryScreen({}, {}, {}, {})
+    LibraryScreen({}, {}, {}, {}, {})
 }

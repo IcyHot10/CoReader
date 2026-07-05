@@ -12,7 +12,9 @@ data class BookModel(
     val notes: List<String> = emptyList(),
     @get:PropertyName("isDeleted")
     @set:PropertyName("isDeleted")
-    var isDeleted: Boolean = false
+    var isDeleted: Boolean = false,
+    val addedTimestamp: Long = 0,
+    val completedTimestamp: Long = 0
 ) {
     companion object {
         fun fromAny(data: Any?): BookModel? {
@@ -24,7 +26,9 @@ data class BookModel(
                         progress = data["progress"] as? String ?: "",
                         highlights = (data["highlights"] as? List<*>)?.mapNotNull { it as? String } ?: emptyList(),
                         notes = (data["notes"] as? List<*>)?.mapNotNull { it as? String } ?: emptyList(),
-                        isDeleted = data["isDeleted"] as? Boolean ?: (data["deleted"] as? Boolean ?: false)
+                        isDeleted = data["isDeleted"] as? Boolean ?: (data["deleted"] as? Boolean ?: false),
+                        addedTimestamp = (data["addedTimestamp"] as? Number)?.toLong() ?: 0L,
+                        completedTimestamp = (data["completedTimestamp"] as? Number)?.toLong() ?: 0L
                     )
                 }
                 is BookModel -> data

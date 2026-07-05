@@ -43,7 +43,8 @@ fun BookScreen(routeToLibrary: () -> Unit) {
 
     DisposableEffect(Unit) {
         onDispose {
-            // Save progression to Firestore when leaving the screen
+            // Save progression and stats when leaving the screen
+            viewModel.endReadingSession()
             viewModel.saveProgressionToFirestore()
 
             // Clean up the fragment when the screen is disposed (navigated away)

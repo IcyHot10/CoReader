@@ -52,4 +52,7 @@ interface RoomBookDao {
 
     @Query("UPDATE book SET is_favourite = :isFavourite WHERE id = :id")
     suspend fun setFavourite(id: Int, isFavourite: Boolean)
+
+    @Query("UPDATE book SET completed_timestamp = :timestamp WHERE id = :id AND completed_timestamp = 0")
+    suspend fun setCompletedTimestamp(id: Int, timestamp: Long)
 }
