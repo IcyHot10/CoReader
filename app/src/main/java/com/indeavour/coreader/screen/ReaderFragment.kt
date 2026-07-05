@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.BrightnessHigh
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
@@ -50,6 +51,7 @@ import com.indeavour.coreader.R
 import com.indeavour.coreader.ui.theme.CoReaderTheme
 import com.indeavour.coreader.ui.theme.Teal
 import com.indeavour.coreader.viewmodel.ReaderViewModel
+import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import org.readium.r2.navigator.DecorableNavigator
@@ -802,10 +804,22 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                         items(items) { item ->
                             when (item) {
                                 is ReaderViewModel.NoteData -> {
-                                    NoteItem(item, usernames[item.userId] ?: "Unknown", onNavigate, colorScheme)
+                                    NoteItem(
+                                        note = item,
+                                        username = usernames[item.userId] ?: "Unknown",
+                                        onNavigate = onNavigate,
+                                        onDelete = { viewModel.deleteNote(item) },
+                                        colorScheme = colorScheme
+                                    )
                                 }
                                 is ReaderViewModel.HighlightData -> {
-                                    HighlightItem(item, usernames[item.userId] ?: "Unknown", onNavigate, colorScheme)
+                                    HighlightItem(
+                                        highlight = item,
+                                        username = usernames[item.userId] ?: "Unknown",
+                                        onNavigate = onNavigate,
+                                        onDelete = { viewModel.deleteHighlight(item) },
+                                        colorScheme = colorScheme
+                                    )
                                 }
                             }
                             HorizontalDivider(
@@ -820,71 +834,109 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     }
 
     @Composable
-    private fun NoteItem(note: ReaderViewModel.NoteData, username: String, onNavigate: (Locator) -> Unit, colorScheme: ColorScheme) {
-        Column(
+    private fun NoteItem(
+        note: ReaderViewModel.NoteData,
+        username: String,
+        onNavigate: (Locator) -> Unit,
+        onDelete: () -> Unit,
+        colorScheme: ColorScheme
+    ) {
+        val currentUserId = remember { FirebaseAuth.getInstance().currentUser?.uid }
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { onNavigate(note.locator) }
-                .padding(vertical = 12.dp, horizontal = 16.dp)
+                .padding(vertical = 12.dp, horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(modifier = Modifier.size(12.dp).background(androidx.compose.ui.graphics.Color(note.color).copy(alpha = 1f), CircleShape))
-                Spacer(modifier = Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.size(12.dp).background(androidx.compose.ui.graphics.Color(note.color).copy(alpha = 1f), CircleShape))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "$username's Note",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colorScheme.secondary.copy(alpha = 0.7f)
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "$username's Note",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = colorScheme.secondary.copy(alpha = 0.7f)
+                    text = note.content,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = colorScheme.secondary
                 )
+                note.locator.text.highlight?.let {
+                    Text(
+                        text = "\"$it\"",
+                        style = MaterialTheme.typography.bodySmall.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic),
+                        color = colorScheme.secondary.copy(alpha = 0.6f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = note.content,
-                style = MaterialTheme.typography.bodyLarge,
-                color = colorScheme.secondary
-            )
-            note.locator.text.highlight?.let {
-                Text(
-                    text = "\"$it\"",
-                    style = MaterialTheme.typography.bodySmall.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic),
-                    color = colorScheme.secondary.copy(alpha = 0.6f),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
+            if (note.userId == currentUserId) {
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete Note",
+                        tint = colorScheme.secondary.copy(alpha = 0.6f)
+                    )
+                }
             }
         }
     }
 
     @Composable
-    private fun HighlightItem(highlight: ReaderViewModel.HighlightData, username: String, onNavigate: (Locator) -> Unit, colorScheme: ColorScheme) {
-        Column(
+    private fun HighlightItem(
+        highlight: ReaderViewModel.HighlightData,
+        username: String,
+        onNavigate: (Locator) -> Unit,
+        onDelete: () -> Unit,
+        colorScheme: ColorScheme
+    ) {
+        val currentUserId = remember { FirebaseAuth.getInstance().currentUser?.uid }
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { onNavigate(highlight.locator) }
-                .padding(vertical = 12.dp, horizontal = 16.dp)
+                .padding(vertical = 12.dp, horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(modifier = Modifier.size(12.dp).background(androidx.compose.ui.graphics.Color(highlight.color).copy(alpha = 1f), CircleShape))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "$username highlighted",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = colorScheme.secondary.copy(alpha = 0.7f)
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.size(12.dp).background(androidx.compose.ui.graphics.Color(highlight.color).copy(alpha = 1f), CircleShape))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "$username highlighted",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colorScheme.secondary.copy(alpha = 0.7f)
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                highlight.locator.text.highlight?.let {
+                    Text(
+                        text = "\"$it\"",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic),
+                        color = colorScheme.secondary,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                } ?: Text(
+                    text = highlight.locator.title ?: "Highlighted section",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colorScheme.secondary
                 )
             }
-            Spacer(modifier = Modifier.height(4.dp))
-            highlight.locator.text.highlight?.let {
-                Text(
-                    text = "\"$it\"",
-                    style = MaterialTheme.typography.bodyMedium.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic),
-                    color = colorScheme.secondary,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis
-                )
-            } ?: Text(
-                text = highlight.locator.title ?: "Highlighted section",
-                style = MaterialTheme.typography.bodyMedium,
-                color = colorScheme.secondary
-            )
+            if (highlight.userId == currentUserId) {
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete Highlight",
+                        tint = colorScheme.secondary.copy(alpha = 0.6f)
+                    )
+                }
+            }
         }
     }
 
@@ -1015,20 +1067,20 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
     private fun applyAnnotations(highlights: List<ReaderViewModel.HighlightData>, notes: List<ReaderViewModel.NoteData>) {
         val navigator = childFragmentManager.findFragmentByTag("navigator") as? DecorableNavigator ?: return
-        Log.d("ReaderFragment", "Applying ${highlights.size} highlights and ${notes.size} notes")
+        Log.d("ReaderFragment", "Applying ${highlights.size} highlights and ${notes.size} notes to navigator")
         
-        val highlightDecorations = highlights.mapIndexed { index, data ->
+        val highlightDecorations = highlights.map { data ->
             Decoration(
-                id = "highlight-$index",
+                id = "highlight-${data.userId}-${data.locator.hashCode()}",
                 locator = data.locator,
                 style = Decoration.Style.Highlight(tint = data.color, isActive = false),
                 extras = mapOf("userId" to data.userId, "type" to "highlight")
             )
         }
 
-        val noteDecorations = notes.mapIndexed { index, data ->
+        val noteDecorations = notes.map { data ->
             Decoration(
-                id = "note-$index",
+                id = "note-${data.userId}-${data.locator.hashCode()}",
                 locator = data.locator,
                 style = Decoration.Style.Highlight(tint = data.color, isActive = true),
                 extras = mapOf("userId" to data.userId, "type" to "note", "content" to data.content)

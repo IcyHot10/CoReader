@@ -888,6 +888,130 @@ class ReaderViewModel(
         }
     }
 
+    fun deleteHighlight(highlight: HighlightData) {
+        val pub = _publication.value ?: return
+        val uid = auth.currentUser?.uid ?: return
+        if (highlight.userId != uid) return
+        val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
+
+        viewModelScope.launch {
+            try {
+                // Update local state immediately on Main thread
+                _highlights.value = _highlights.value.filter { it != highlight }
+
+                val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
+                if (effectiveGroupId != null) {
+                    val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
+                    val groupBookDoc = groupBookRef.get().await()
+                    if (groupBookDoc.exists()) {
+                        val groupBook = groupBookDoc.toObject(GroupBook::class.java)
+                        val groupProgression = groupBook?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: return@launch
+                        
+                        val userBooks = groupProgression[uid] ?: return@launch
+                        val bookModel = BookModel.fromAny(userBooks[bookKey]) ?: return@launch
+                        
+                        val updatedHighlights = bookModel.highlights.filterNot { entryJson ->
+                            try {
+                                val obj = org.json.JSONObject(entryJson)
+                                val locJson = obj.optJSONObject("locator")
+                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
+                                locator == highlight.locator
+                            } catch (e: Exception) { false }
+                        }
+                        
+                        userBooks[bookKey] = bookModel.copy(highlights = updatedHighlights)
+                        groupProgression[uid] = userBooks
+                        groupBookRef.update("bookProgression", groupProgression).await()
+                    }
+                } else {
+                    val userRef = firestore.collection("users").document(uid)
+                    val userDoc = userRef.get().await()
+                    if (userDoc.exists()) {
+                        val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
+                        val books = userModel.books.toMutableMap()
+                        val bookModel = books[bookKey] ?: return@launch
+                        
+                        val updatedHighlights = bookModel.highlights.filterNot { entryJson ->
+                            try {
+                                val obj = org.json.JSONObject(entryJson)
+                                val locJson = obj.optJSONObject("locator")
+                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
+                                locator == highlight.locator
+                            } catch (e: Exception) { false }
+                        }
+                        
+                        books[bookKey] = bookModel.copy(highlights = updatedHighlights)
+                        userRef.update("books", books).await()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ReaderViewModel", "Failed to delete highlight from Firestore", e)
+            }
+        }
+    }
+
+    fun deleteNote(note: NoteData) {
+        val pub = _publication.value ?: return
+        val uid = auth.currentUser?.uid ?: return
+        if (note.userId != uid) return
+        val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
+
+        viewModelScope.launch {
+            try {
+                // Update local state immediately on Main thread
+                _notes.value = _notes.value.filter { it != note }
+
+                val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
+                if (effectiveGroupId != null) {
+                    val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
+                    val groupBookDoc = groupBookRef.get().await()
+                    if (groupBookDoc.exists()) {
+                        val groupBook = groupBookDoc.toObject(GroupBook::class.java)
+                        val groupProgression = groupBook?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: return@launch
+                        
+                        val userBooks = groupProgression[uid] ?: return@launch
+                        val bookModel = BookModel.fromAny(userBooks[bookKey]) ?: return@launch
+                        
+                        val updatedNotes = bookModel.notes.filterNot { entryJson ->
+                            try {
+                                val obj = org.json.JSONObject(entryJson)
+                                val locJson = obj.optJSONObject("locator")
+                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
+                                locator == note.locator && obj.optString("content") == note.content
+                            } catch (e: Exception) { false }
+                        }
+                        
+                        userBooks[bookKey] = bookModel.copy(notes = updatedNotes)
+                        groupProgression[uid] = userBooks
+                        groupBookRef.update("bookProgression", groupProgression).await()
+                    }
+                } else {
+                    val userRef = firestore.collection("users").document(uid)
+                    val userDoc = userRef.get().await()
+                    if (userDoc.exists()) {
+                        val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
+                        val books = userModel.books.toMutableMap()
+                        val bookModel = books[bookKey] ?: return@launch
+                        
+                        val updatedNotes = bookModel.notes.filterNot { entryJson ->
+                            try {
+                                val obj = org.json.JSONObject(entryJson)
+                                val locJson = obj.optJSONObject("locator")
+                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
+                                locator == note.locator && obj.optString("content") == note.content
+                            } catch (e: Exception) { false }
+                        }
+                        
+                        books[bookKey] = bookModel.copy(notes = updatedNotes)
+                        userRef.update("books", books).await()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ReaderViewModel", "Failed to delete note from Firestore", e)
+            }
+        }
+    }
+
     private fun openBook(file: File, progression: String? = null) {
         Log.d("ReaderViewModel", "openBook: ${file.absolutePath}, progression: $progression")
         if (!hasEverLoaded) {
