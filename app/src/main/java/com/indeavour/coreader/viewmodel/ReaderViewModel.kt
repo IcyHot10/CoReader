@@ -138,9 +138,13 @@ class ReaderViewModel(
     private val _remoteProgression = MutableStateFlow<Locator?>(null)
     val remoteProgression: StateFlow<Locator?> = _remoteProgression
 
+    private val _isAdmin = MutableStateFlow(false)
+    val isAdmin: StateFlow<Boolean> = _isAdmin
+
     private var loadedBookId: Int? = null
     private var loadedGroupId: String? = "none" // Use "none" as a sentinel for personal
     private var groupBookListener: com.google.firebase.firestore.ListenerRegistration? = null
+    private var groupInfoListener: com.google.firebase.firestore.ListenerRegistration? = null
 
     private var lastLocator: Locator? = null
     private var sessionStartTime: Long = 0
@@ -447,6 +451,7 @@ class ReaderViewModel(
     override fun onCleared() {
         super.onCleared()
         groupBookListener?.remove()
+        groupInfoListener?.remove()
         endReadingSession()
         saveProgressionToFirestore()
     }
@@ -514,6 +519,9 @@ class ReaderViewModel(
                 }
                 groupBookListener?.remove()
                 groupBookListener = null
+                groupInfoListener?.remove()
+                groupInfoListener = null
+                _isAdmin.value = false
                 _publication.value = null
                 _isBookReady.value = false
                 hasEverLoaded = false
@@ -522,6 +530,15 @@ class ReaderViewModel(
                 _highlights.value = emptyList()
                 _notes.value = emptyList()
                 loadedGroupId = resolvedGroupId
+
+                // Start listening to group info if in a group
+                if (loadedGroupId != "none") {
+                    groupInfoListener = firestore.collection("groups").document(loadedGroupId!!)
+                        .addSnapshotListener { snapshot, _ ->
+                            val group = snapshot?.toObject(com.indeavour.coreader.model.firebase.GroupModel::class.java)
+                            _isAdmin.value = group?.groupMembers?.get(uid)?.admin == true
+                        }
+                }
             } else if (_publication.value != null) {
                 Log.d("ReaderViewModel", "Book ${activeBook.id} already loaded, resuming session")
                 val currentProgress = _progress.value.value
@@ -891,7 +908,8 @@ class ReaderViewModel(
     fun deleteHighlight(highlight: HighlightData) {
         val pub = _publication.value ?: return
         val uid = auth.currentUser?.uid ?: return
-        if (highlight.userId != uid) return
+        val isAdminUser = _isAdmin.value
+        if (highlight.userId != uid && !isAdminUser) return
         val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
 
         viewModelScope.launch {
@@ -907,7 +925,9 @@ class ReaderViewModel(
                         val groupBook = groupBookDoc.toObject(GroupBook::class.java)
                         val groupProgression = groupBook?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: return@launch
                         
-                        val userBooks = groupProgression[uid] ?: return@launch
+                        // Use the highlight's userId to find the correct entry, not the current user's uid if admin
+                        val targetUid = highlight.userId
+                        val userBooks = groupProgression[targetUid] ?: return@launch
                         val bookModel = BookModel.fromAny(userBooks[bookKey]) ?: return@launch
                         
                         val updatedHighlights = bookModel.highlights.filterNot { entryJson ->
@@ -920,10 +940,11 @@ class ReaderViewModel(
                         }
                         
                         userBooks[bookKey] = bookModel.copy(highlights = updatedHighlights)
-                        groupProgression[uid] = userBooks
+                        groupProgression[targetUid] = userBooks
                         groupBookRef.update("bookProgression", groupProgression).await()
                     }
                 } else {
+                    // Personal book - only the owner can delete, which is checked at the start
                     val userRef = firestore.collection("users").document(uid)
                     val userDoc = userRef.get().await()
                     if (userDoc.exists()) {
@@ -953,7 +974,8 @@ class ReaderViewModel(
     fun deleteNote(note: NoteData) {
         val pub = _publication.value ?: return
         val uid = auth.currentUser?.uid ?: return
-        if (note.userId != uid) return
+        val isAdminUser = _isAdmin.value
+        if (note.userId != uid && !isAdminUser) return
         val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
 
         viewModelScope.launch {
@@ -969,7 +991,9 @@ class ReaderViewModel(
                         val groupBook = groupBookDoc.toObject(GroupBook::class.java)
                         val groupProgression = groupBook?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: return@launch
                         
-                        val userBooks = groupProgression[uid] ?: return@launch
+                        // Use the note's userId to find the correct entry
+                        val targetUid = note.userId
+                        val userBooks = groupProgression[targetUid] ?: return@launch
                         val bookModel = BookModel.fromAny(userBooks[bookKey]) ?: return@launch
                         
                         val updatedNotes = bookModel.notes.filterNot { entryJson ->
@@ -982,10 +1006,11 @@ class ReaderViewModel(
                         }
                         
                         userBooks[bookKey] = bookModel.copy(notes = updatedNotes)
-                        groupProgression[uid] = userBooks
+                        groupProgression[targetUid] = userBooks
                         groupBookRef.update("bookProgression", groupProgression).await()
                     }
                 } else {
+                    // Personal book - owner check at start
                     val userRef = firestore.collection("users").document(uid)
                     val userDoc = userRef.get().await()
                     if (userDoc.exists()) {

@@ -71,7 +71,13 @@ class GroupViewModel : ViewModel() {
                         val groupList = mutableListOf<GroupModel>()
                         for (id in groupIDs) {
                             val groupDoc = firestore.collection("groups").document(id).get().await()
-                            groupDoc.toObject(GroupModel::class.java)?.let { groupList.add(it) }
+                            groupDoc.toObject(GroupModel::class.java)?.let { group ->
+                                groupList.add(group)
+                                // Fetch usernames for all members in this group
+                                group.groupMembers.keys.forEach { memberId ->
+                                    fetchUsername(memberId)
+                                }
+                            }
                         }
                         _groups.value = groupList
                     } catch (e: Exception) {
@@ -225,7 +231,7 @@ class GroupViewModel : ViewModel() {
                 val group = GroupModel(
                     groupCode = groupCode,
                     groupName = groupName,
-                    groupMembers = mapOf(uid to GroupMember(isAdmin = true, highlightColour = "0x66FFFF00"))
+                    groupMembers = mapOf(uid to GroupMember(admin = true, highlightColour = "0x66FFFF00"))
                 )
 
                 // 1. Add group to user's group list
@@ -278,7 +284,7 @@ class GroupViewModel : ViewModel() {
                 val groupRef = firestore.collection("groups").document(groupCode)
                 val group = groupDoc.toObject(GroupModel::class.java)!!
                 val updatedMembers = group.groupMembers.toMutableMap()
-                updatedMembers[uid] = GroupMember(isAdmin = false, highlightColour = "0x66FFFF00")
+                updatedMembers[uid] = GroupMember(admin = false, highlightColour = "0x66FFFF00")
                 groupRef.update("groupMembers", updatedMembers).await()
 
                 if (userDoc.getString("activeGroup") == null) {
@@ -309,26 +315,31 @@ class GroupViewModel : ViewModel() {
             onResult(false)
             return
         }
+        removeMemberInternal(groupCode, uid, onResult)
+    }
+
+    fun removeMember(groupCode: String, memberId: String, onResult: (Boolean) -> Unit) {
+        removeMemberInternal(groupCode, memberId, onResult)
+    }
+
+    private fun removeMemberInternal(groupCode: String, targetUid: String, onResult: (Boolean) -> Unit) {
         viewModelScope.launch {
             try {
-                Log.d("GroupViewModel", "Attempting to leave group: $groupCode for user: $uid")
+                Log.d("GroupViewModel", "Attempting to remove member: $targetUid from group: $groupCode")
                 
                 // 1. Remove from user's group list
-                val userRef = firestore.collection("users").document(uid)
+                val userRef = firestore.collection("users").document(targetUid)
                 val userDoc = userRef.get().await()
-                val currentGroups = userDoc.get("groupIDs") as? List<String> ?: emptyList()
-                val updatedGroups = currentGroups.filter { it != groupCode }
-                
-                Log.d("GroupViewModel", "Step 1: Updating user's groupIDs. Old: $currentGroups, New: $updatedGroups")
-                userRef.update("groupIDs", updatedGroups).await()
-                
-                // 2. Clear active group if it's the one being left
-                if (userDoc.getString("activeGroup") == groupCode) {
-                    val nextActive = updatedGroups.firstOrNull()
-                    Log.d("GroupViewModel", "Step 2: Clearing activeGroup. Setting to: $nextActive")
-                    userRef.update("activeGroup", nextActive).await()
-                } else {
-                    Log.d("GroupViewModel", "Step 2: activeGroup is not the group being left. Current: ${userDoc.getString("activeGroup")}")
+                if (userDoc.exists()) {
+                    val currentGroups = userDoc.get("groupIDs") as? List<String> ?: emptyList()
+                    val updatedGroups = currentGroups.filter { it != groupCode }
+                    userRef.update("groupIDs", updatedGroups).await()
+                    
+                    // 2. Clear active group if it's the one being left
+                    if (userDoc.getString("activeGroup") == groupCode) {
+                        val nextActive = updatedGroups.firstOrNull() ?: ""
+                        userRef.update("activeGroup", nextActive).await()
+                    }
                 }
 
                 // 3. Remove from group's member list
@@ -337,29 +348,59 @@ class GroupViewModel : ViewModel() {
                 if (groupDocSnapshot.exists()) {
                     val group = groupDocSnapshot.toObject(GroupModel::class.java)!!
                     val updatedMembers = group.groupMembers.toMutableMap()
-                    val removed = updatedMembers.remove(uid)
-                    
-                    Log.d("GroupViewModel", "Step 3: Removing user from group members. User removed: $removed")
+                    updatedMembers.remove(targetUid)
                     
                     if (updatedMembers.isEmpty()) {
-                        Log.d("GroupViewModel", "Step 3: No members left, deleting group and groupBooks")
-                        // Optional: Delete group if no members left
                         groupRef.delete().await()
-                        // Also delete groupBooks for this group
                         firestore.collection("groupBooks").document(groupCode).delete().await()
                     } else {
-                        Log.d("GroupViewModel", "Step 3: Updating group members list. Remaining: ${updatedMembers.keys}")
                         groupRef.update("groupMembers", updatedMembers).await()
                     }
-                } else {
-                    Log.w("GroupViewModel", "Step 3: Group document $groupCode does not exist")
                 }
-                Log.d("GroupViewModel", "Step 4: Fetching new list")
+
+                // 4. Remove from groupBooks progression
+                val groupBookRef = firestore.collection("groupBooks").document(groupCode)
+                val groupBookDoc = groupBookRef.get().await()
+                if (groupBookDoc.exists()) {
+                    val groupBook = groupBookDoc.toObject(GroupBook::class.java)
+                    if (groupBook != null) {
+                        val updatedProgression = groupBook.bookProgression.toMutableMap()
+                        updatedProgression.remove(targetUid)
+                        groupBookRef.update("bookProgression", updatedProgression).await()
+                    }
+                }
+
                 fetchUserGroups()
-                Log.d("GroupViewModel", "Leave group successful: $groupCode")
                 onResult(true)
             } catch (e: Exception) {
-                Log.e("GroupViewModel", "Failed to leave group: $groupCode", e)
+                Log.e("GroupViewModel", "Failed to remove member: $targetUid from $groupCode", e)
+                onResult(false)
+            }
+        }
+    }
+
+    fun updateAdminStatus(groupCode: String, memberId: String, isAdmin: Boolean, onResult: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val groupRef = firestore.collection("groups").document(groupCode)
+                val groupDoc = groupRef.get().await()
+                if (groupDoc.exists()) {
+                    val group = groupDoc.toObject(GroupModel::class.java)!!
+                    val updatedMembers = group.groupMembers.toMutableMap()
+                    val member = updatedMembers[memberId]
+                    if (member != null) {
+                        updatedMembers[memberId] = member.copy(admin = isAdmin)
+                        groupRef.update("groupMembers", updatedMembers).await()
+                        fetchUserGroups()
+                        onResult(true)
+                    } else {
+                        onResult(false)
+                    }
+                } else {
+                    onResult(false)
+                }
+            } catch (e: Exception) {
+                Log.e("GroupViewModel", "Failed to update admin status", e)
                 onResult(false)
             }
         }

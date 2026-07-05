@@ -1,13 +1,21 @@
 package com.indeavour.coreader.screen
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonRemove
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -26,12 +34,51 @@ fun GroupScreen(onBack: () -> Unit) {
     val groupViewModel: GroupViewModel = viewModel()
     val groups by groupViewModel.groups.collectAsState()
     val activeGroupId by groupViewModel.activeGroupId.collectAsState()
+    val usernames by groupViewModel.usernames.collectAsState()
     val context = LocalContext.current
+    val currentUserId = remember { com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid }
     var showCreateDialog by remember { mutableStateOf(false) }
     var groupName by remember { mutableStateOf("") }
     var showJoinDialog by remember { mutableStateOf(false) }
     var groupCode by remember { mutableStateOf("") }
     var groupToLeave by remember { mutableStateOf<GroupModel?>(null) }
+    var memberToRemove by remember { mutableStateOf<Pair<GroupModel, String>?>(null) }
+    var menuTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    
+    val expandedGroups = remember { mutableStateMapOf<String, Boolean>() }
+
+    if (memberToRemove != null) {
+        val (group, memberId) = memberToRemove!!
+        val memberName = usernames[memberId] ?: "this member"
+        AlertDialog(
+            onDismissRequest = { memberToRemove = null },
+            title = { Text("Remove Member", color = MaterialTheme.colorScheme.secondary) },
+            text = { Text("Are you sure you want to remove '$memberName' from '${group.groupName}'?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        groupViewModel.removeMember(group.groupCode, memberId) { success ->
+                            if (success) {
+                                AppUtils.showToast(context, "Removed member")
+                            } else {
+                                AppUtils.showToast(context, "Failed to remove member")
+                            }
+                        }
+                        memberToRemove = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal)
+                ) {
+                    Text("Remove", color = MaterialTheme.colorScheme.secondary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { memberToRemove = null }) {
+                    Text("Cancel", color = Teal)
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    }
 
     if (groupToLeave != null) {
         AlertDialog(
@@ -246,6 +293,9 @@ fun GroupScreen(onBack: () -> Unit) {
             ) {
                 items(groups) { group ->
                     val isActive = group.groupCode == activeGroupId
+                    val isExpanded = expandedGroups[group.groupCode] ?: false
+                    val amIAdmin = group.groupMembers[currentUserId]?.admin == true
+                    
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -264,23 +314,169 @@ fun GroupScreen(onBack: () -> Unit) {
                             CardDefaults.cardColors()
                         }
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(text = group.groupName, style = MaterialTheme.typography.titleLarge)
-                                Text(text = "Code: ${group.groupCode}", style = MaterialTheme.typography.bodyMedium)
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(text = group.groupName, style = MaterialTheme.typography.titleLarge)
+                                    Text(text = "Code: ${group.groupCode}", style = MaterialTheme.typography.bodyMedium)
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(onClick = { 
+                                        expandedGroups[group.groupCode] = !isExpanded
+                                    }) {
+                                        Icon(
+                                            imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                            contentDescription = "Show Members",
+                                            tint = if (isActive) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                    IconButton(onClick = { groupToLeave = group }) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.Logout,
+                                            contentDescription = "Leave Group",
+                                            tint = if (isActive) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
                             }
-                            IconButton(onClick = { groupToLeave = group }) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.Logout,
-                                    contentDescription = "Leave Group",
-                                    tint = if (isActive) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
-                                )
+                            
+                            AnimatedVisibility(visible = isExpanded) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                                ) {
+                                    HorizontalDivider(
+                                        color = if (isActive) MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f) 
+                                               else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = "Members (${group.groupMembers.size})",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = if (isActive) MaterialTheme.colorScheme.secondary.copy(alpha = 0.8f)
+                                               else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    group.groupMembers.keys.forEach { memberId ->
+                                        val memberInfo = group.groupMembers[memberId]
+                                        val memberName = usernames[memberId] ?: "Loading..."
+                                        val isMe = memberId == currentUserId
+                                        val isTargetAdmin = memberInfo?.admin == true
+                                        
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Person,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp),
+                                                tint = if (isActive) MaterialTheme.colorScheme.secondary.copy(alpha = 0.7f)
+                                                       else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = if (isMe) "$memberName (You)" else memberName,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                modifier = Modifier.weight(1f),
+                                                fontWeight = if (isMe) androidx.compose.ui.text.font.FontWeight.Bold else null
+                                            )
+                                            
+                                            if (isTargetAdmin) {
+                                                Surface(
+                                                    color = if (isActive) MaterialTheme.colorScheme.secondary
+                                                           else Teal,
+                                                    shape = CircleShape,
+                                                    modifier = Modifier.padding(start = 8.dp)
+                                                ) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.Star,
+                                                            contentDescription = null,
+                                                            modifier = Modifier.size(12.dp),
+                                                            tint = if (isActive) Teal else MaterialTheme.colorScheme.surface
+                                                        )
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text(
+                                                            text = "Admin",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = if (isActive) Teal else MaterialTheme.colorScheme.surface,
+                                                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                                        )
+                                                    }
+                                                }
+                                            }
+
+                                            if (amIAdmin && !isMe) {
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Box {
+                                                    IconButton(
+                                                        onClick = { menuTarget = group.groupCode to memberId },
+                                                        modifier = Modifier.size(24.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.MoreVert,
+                                                            contentDescription = "Manage Member",
+                                                            modifier = Modifier.size(20.dp),
+                                                            tint = if (isActive) MaterialTheme.colorScheme.secondary.copy(alpha = 0.7f)
+                                                                   else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                                        )
+                                                    }
+                                                    
+                                                    DropdownMenu(
+                                                        expanded = menuTarget?.first == group.groupCode && menuTarget?.second == memberId,
+                                                        onDismissRequest = { menuTarget = null },
+                                                        containerColor = MaterialTheme.colorScheme.surface
+                                                    ) {
+                                                        DropdownMenuItem(
+                                                            text = { Text(if (isTargetAdmin) "Revoke Admin" else "Make Admin") },
+                                                            onClick = {
+                                                                groupViewModel.updateAdminStatus(group.groupCode, memberId, !isTargetAdmin) { success ->
+                                                                    if (!success) AppUtils.showToast(context, "Failed to update admin status")
+                                                                }
+                                                                menuTarget = null
+                                                            },
+                                                            leadingIcon = { 
+                                                                Icon(
+                                                                    Icons.Default.Star, 
+                                                                    null,
+                                                                    tint = if (isTargetAdmin) Teal else MaterialTheme.colorScheme.onSurfaceVariant
+                                                                ) 
+                                                            }
+                                                        )
+                                                        DropdownMenuItem(
+                                                            text = { Text("Remove from Group", color = MaterialTheme.colorScheme.error) },
+                                                            onClick = {
+                                                                memberToRemove = group to memberId
+                                                                menuTarget = null
+                                                            },
+                                                            leadingIcon = { 
+                                                                Icon(
+                                                                    Icons.Default.PersonRemove, 
+                                                                    null, 
+                                                                    tint = MaterialTheme.colorScheme.error
+                                                                ) 
+                                                            }
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                }
                             }
                         }
                     }

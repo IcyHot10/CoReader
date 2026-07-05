@@ -140,6 +140,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         val groupProgress by viewModel.groupProgress.collectAsState()
         val remoteProgression by viewModel.remoteProgression.collectAsState()
         val isBookReady by viewModel.isBookReady.collectAsState()
+        val isAdmin by viewModel.isAdmin.collectAsState()
         val usernames by viewModel.usernames.collectAsState()
         var isInterfaceVisible by remember { mutableStateOf(false) }
         var isColorPickerExpanded by remember { mutableStateOf(false) }
@@ -733,6 +734,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                 notes = notes,
                 highlights = highlights,
                 usernames = usernames,
+                isAdmin = isAdmin,
                 onClose = { showNotesSheet = false },
                 onNavigate = { locator ->
                     val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
@@ -767,6 +769,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         notes: List<ReaderViewModel.NoteData>,
         highlights: List<ReaderViewModel.HighlightData>,
         usernames: Map<String, String>,
+        isAdmin: Boolean,
         onClose: () -> Unit,
         onNavigate: (Locator) -> Unit,
         colorScheme: ColorScheme
@@ -807,6 +810,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                     NoteItem(
                                         note = item,
                                         username = usernames[item.userId] ?: "Unknown",
+                                        isAdmin = isAdmin,
                                         onNavigate = onNavigate,
                                         onDelete = { viewModel.deleteNote(item) },
                                         colorScheme = colorScheme
@@ -816,6 +820,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                     HighlightItem(
                                         highlight = item,
                                         username = usernames[item.userId] ?: "Unknown",
+                                        isAdmin = isAdmin,
                                         onNavigate = onNavigate,
                                         onDelete = { viewModel.deleteHighlight(item) },
                                         colorScheme = colorScheme
@@ -837,6 +842,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     private fun NoteItem(
         note: ReaderViewModel.NoteData,
         username: String,
+        isAdmin: Boolean,
         onNavigate: (Locator) -> Unit,
         onDelete: () -> Unit,
         colorScheme: ColorScheme
@@ -875,7 +881,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     )
                 }
             }
-            if (note.userId == currentUserId) {
+            if (note.userId == currentUserId || isAdmin) {
                 IconButton(onClick = onDelete) {
                     Icon(
                         imageVector = Icons.Default.Delete,
@@ -891,6 +897,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     private fun HighlightItem(
         highlight: ReaderViewModel.HighlightData,
         username: String,
+        isAdmin: Boolean,
         onNavigate: (Locator) -> Unit,
         onDelete: () -> Unit,
         colorScheme: ColorScheme
@@ -928,7 +935,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     color = colorScheme.secondary
                 )
             }
-            if (highlight.userId == currentUserId) {
+            if (highlight.userId == currentUserId || isAdmin) {
                 IconButton(onClick = onDelete) {
                     Icon(
                         imageVector = Icons.Default.Delete,
