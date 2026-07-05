@@ -20,6 +20,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.StickyNote2
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.BrightnessHigh
@@ -36,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.Fragment
@@ -136,8 +138,10 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         val groupProgress by viewModel.groupProgress.collectAsState()
         val remoteProgression by viewModel.remoteProgression.collectAsState()
         val isBookReady by viewModel.isBookReady.collectAsState()
+        val usernames by viewModel.usernames.collectAsState()
         var isInterfaceVisible by remember { mutableStateOf(false) }
         var isColorPickerExpanded by remember { mutableStateOf(false) }
+        var showNotesSheet by remember { mutableStateOf(false) }
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
         var isContainerReady by remember { mutableStateOf(false) }
@@ -621,12 +625,23 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                     publication?.metadata?.title?.let { title ->
                                         Text(
                                             text = title,
+                                            modifier = Modifier.weight(1f),
                                             style = MaterialTheme.typography.titleLarge.copy(
                                                 fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                                                 fontSize = 20.sp
                                             ),
                                             color = colorScheme.secondary,
-                                            maxLines = 1
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    IconButton(onClick = { 
+                                        showNotesSheet = true
+                                    }) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.StickyNote2,
+                                            contentDescription = "Notes and Highlights",
+                                            tint = colorScheme.secondary
                                         )
                                     }
                                 }
@@ -710,6 +725,22 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                 }
             }
         }
+
+        if (showNotesSheet) {
+            NotesAndHighlightsSheet(
+                notes = notes,
+                highlights = highlights,
+                usernames = usernames,
+                onClose = { showNotesSheet = false },
+                onNavigate = { locator ->
+                    val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+                    navigator?.go(locator, animated = true)
+                    showNotesSheet = false
+                    isInterfaceVisible = false
+                },
+                colorScheme = colorScheme
+            )
+        }
     }
 
     // Helper to embed legacy Android View in Compose
@@ -726,6 +757,135 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             update = update,
             modifier = modifier
         )
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun NotesAndHighlightsSheet(
+        notes: List<ReaderViewModel.NoteData>,
+        highlights: List<ReaderViewModel.HighlightData>,
+        usernames: Map<String, String>,
+        onClose: () -> Unit,
+        onNavigate: (Locator) -> Unit,
+        colorScheme: ColorScheme
+    ) {
+        ModalBottomSheet(
+            onDismissRequest = onClose,
+            containerColor = Teal,
+            contentColor = colorScheme.secondary
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = 32.dp)
+            ) {
+                Text(
+                    "Notes & Highlights",
+                    modifier = Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = colorScheme.secondary
+                )
+                
+                val items = remember(notes, highlights) {
+                    (notes.map { it as Any } + highlights.map { it as Any }).sortedBy { 
+                        (it as? ReaderViewModel.NoteData)?.locator?.locations?.totalProgression ?: 
+                        (it as? ReaderViewModel.HighlightData)?.locator?.locations?.totalProgression ?: 0.0
+                    }
+                }
+
+                if (items.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("No notes or highlights yet", color = colorScheme.secondary.copy(alpha = 0.6f))
+                    }
+                } else {
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        items(items) { item ->
+                            when (item) {
+                                is ReaderViewModel.NoteData -> {
+                                    NoteItem(item, usernames[item.userId] ?: "Unknown", onNavigate, colorScheme)
+                                }
+                                is ReaderViewModel.HighlightData -> {
+                                    HighlightItem(item, usernames[item.userId] ?: "Unknown", onNavigate, colorScheme)
+                                }
+                            }
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                color = colorScheme.secondary.copy(alpha = 0.1f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun NoteItem(note: ReaderViewModel.NoteData, username: String, onNavigate: (Locator) -> Unit, colorScheme: ColorScheme) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onNavigate(note.locator) }
+                .padding(vertical = 12.dp, horizontal = 16.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.size(12.dp).background(androidx.compose.ui.graphics.Color(note.color).copy(alpha = 1f), CircleShape))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "$username's Note",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = colorScheme.secondary.copy(alpha = 0.7f)
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = note.content,
+                style = MaterialTheme.typography.bodyLarge,
+                color = colorScheme.secondary
+            )
+            note.locator.text.highlight?.let {
+                Text(
+                    text = "\"$it\"",
+                    style = MaterialTheme.typography.bodySmall.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic),
+                    color = colorScheme.secondary.copy(alpha = 0.6f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun HighlightItem(highlight: ReaderViewModel.HighlightData, username: String, onNavigate: (Locator) -> Unit, colorScheme: ColorScheme) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onNavigate(highlight.locator) }
+                .padding(vertical = 12.dp, horizontal = 16.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.size(12.dp).background(androidx.compose.ui.graphics.Color(highlight.color).copy(alpha = 1f), CircleShape))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "$username highlighted",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = colorScheme.secondary.copy(alpha = 0.7f)
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            highlight.locator.text.highlight?.let {
+                Text(
+                    text = "\"$it\"",
+                    style = MaterialTheme.typography.bodyMedium.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic),
+                    color = colorScheme.secondary,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+            } ?: Text(
+                text = highlight.locator.title ?: "Highlighted section",
+                style = MaterialTheme.typography.bodyMedium,
+                color = colorScheme.secondary
+            )
+        }
     }
 
     override fun onPause() {
