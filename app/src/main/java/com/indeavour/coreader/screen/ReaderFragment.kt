@@ -20,6 +20,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.StickyNote2
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.BrightnessAuto
@@ -123,10 +124,25 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                 val isDark = when(themePreference) {
                     "light" -> false
                     "dark" -> true
+                    "sepia" -> false
                     else -> isSystemInDarkTheme()
                 }
                 CoReaderTheme(darkTheme = isDark) {
-                    ReaderScreen()
+                    val colorScheme = if (themePreference == "sepia") {
+                        MaterialTheme.colorScheme.copy(
+                            background = androidx.compose.ui.graphics.Color(0xFFF5ECDB),
+                            onBackground = androidx.compose.ui.graphics.Color.Black,
+                            surface = androidx.compose.ui.graphics.Color(0xFFF5ECDB),
+                            onSurface = androidx.compose.ui.graphics.Color.Black,
+                            secondary = androidx.compose.ui.graphics.Color(0xFF093624) // BottleGreen
+                        )
+                    } else {
+                        MaterialTheme.colorScheme
+                    }
+
+                    MaterialTheme(colorScheme = colorScheme) {
+                        ReaderScreen()
+                    }
                 }
             }
         }
@@ -245,11 +261,12 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         LaunchedEffect(colorScheme) {
             val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
             if (navigator != null && colorScheme != null) {
-                val theme = if (colorScheme.background.toArgb() == Color.BLACK || 
-                    colorScheme.background.toArgb() < 0xFF444444.toInt()) {
-                    Theme.DARK
-                } else {
-                    Theme.LIGHT
+                val themePreference = viewModel.theme.value
+                val theme = when (themePreference) {
+                    "dark" -> Theme.DARK
+                    "sepia" -> Theme.SEPIA
+                    "light" -> Theme.LIGHT
+                    else -> if (colorScheme.background.toArgb() == android.graphics.Color.BLACK) Theme.DARK else Theme.LIGHT
                 }
                 
                 val preferences = (currentPreferences ?: EpubPreferences()).copy(
@@ -546,6 +563,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                                 val themeOptions = listOf(
                                                     Triple("system", Icons.Default.BrightnessAuto, "System"),
                                                     Triple("light", Icons.Default.BrightnessHigh, "Light"),
+                                                    Triple("sepia", Icons.AutoMirrored.Filled.MenuBook, "Sepia"),
                                                     Triple("dark", Icons.Default.Brightness4, "Dark")
                                                 )
 
@@ -980,11 +998,16 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         val container = view?.findViewById<View>(R.id.reader_container)
         if (container == null) return
 
-        val theme = if (colorScheme?.background?.toArgb() == Color.BLACK || 
-            (colorScheme?.background?.toArgb() ?: 0) < 0xFF444444.toInt()) {
-            Theme.DARK
-        } else {
-            Theme.LIGHT
+        val theme = when (viewModel.theme.value) {
+            "dark" -> Theme.DARK
+            "sepia" -> Theme.SEPIA
+            "light" -> Theme.LIGHT
+            else -> if (colorScheme?.background?.toArgb() == Color.BLACK || 
+                (colorScheme?.background?.toArgb() ?: 0) < 0xFF444444.toInt()) {
+                Theme.DARK
+            } else {
+                Theme.LIGHT
+            }
         }
 
         val initialPreferences = EpubPreferences(
