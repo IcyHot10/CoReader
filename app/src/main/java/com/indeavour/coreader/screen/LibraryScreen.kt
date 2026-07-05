@@ -118,6 +118,8 @@ import com.google.firebase.auth.FirebaseAuth
 import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import com.indeavour.coreader.model.room.UserPreferences
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.getValue
@@ -160,6 +162,22 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
     var isSearchActive by rememberSaveable { mutableStateOf(false) }
     var filterType by rememberSaveable { mutableStateOf("All") }
     var showFilterDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        database.userPreferencesDao().getPreferences().collect { prefs ->
+            prefs?.let {
+                filterType = it.libraryFilter
+            }
+        }
+    }
+
+    fun updateLibraryFilter(newFilter: String) {
+        filterType = newFilter
+        scope.launch(Dispatchers.IO) {
+            val currentPrefs = database.userPreferencesDao().getPreferences().first() ?: UserPreferences()
+            database.userPreferencesDao().insertOrUpdate(currentPrefs.copy(libraryFilter = newFilter))
+        }
+    }
 
     var books by remember {
         mutableStateOf(listOf<RoomBook>())
@@ -350,6 +368,7 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                                 "In Group", 
                                 "Not in Group", 
                                 "In Progress", 
+                                "Not Completed",
                                 "Unread", 
                                 "Completed"
                             )
@@ -358,7 +377,7 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                                     Modifier
                                         .fillMaxWidth()
                                         .clickable { 
-                                            filterType = type
+                                            updateLibraryFilter(type)
                                             showFilterDialog = false 
                                         }
                                         .padding(12.dp),
@@ -405,6 +424,7 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                             "In Group" -> groupBooks.containsKey(bookKey)
                             "Not in Group" -> !groupBooks.containsKey(bookKey)
                             "In Progress" -> progress > 0.005f && progress < 0.995f
+                            "Not Completed" -> progress < 0.995f
                             "Unread" -> progress <= 0.005f
                             "Completed" -> progress >= 0.995f
                             else -> true

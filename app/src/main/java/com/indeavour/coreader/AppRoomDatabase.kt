@@ -13,7 +13,7 @@ import com.indeavour.coreader.model.room.ReadingActivity
 import com.indeavour.coreader.model.room.RoomBook
 import com.indeavour.coreader.model.room.UserPreferences
 
-@Database(entities = [RoomBook::class, UserPreferences::class, ReadingActivity::class], version = 9, exportSchema = false)
+@Database(entities = [RoomBook::class, UserPreferences::class, ReadingActivity::class], version = 10, exportSchema = false)
 abstract class AppRoomDatabase: RoomDatabase() {
     abstract fun bookDao(): RoomBookDao
     abstract fun userPreferencesDao(): UserPreferencesDao
@@ -22,7 +22,7 @@ abstract class AppRoomDatabase: RoomDatabase() {
     companion object {
         @Volatile private var INSTANCE: AppRoomDatabase? = null
 
-        private val MIGRATION_5_6 = object : Migration(5, 6) {
+        private val MIBRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `user_preferences` (`id` INTEGER NOT NULL, `font_size` REAL NOT NULL, PRIMARY KEY(`id`))")
             }
@@ -47,11 +47,18 @@ abstract class AppRoomDatabase: RoomDatabase() {
             }
         }
 
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `user_preferences` ADD COLUMN `library_filter` TEXT NOT NULL DEFAULT 'All'")
+                db.execSQL("ALTER TABLE `user_preferences` ADD COLUMN `group_filter` TEXT NOT NULL DEFAULT 'All'")
+            }
+        }
+
         fun getDatabase(context: Context): AppRoomDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(context.applicationContext,
                     AppRoomDatabase::class.java, "library_db")
-                    .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                    .addMigrations(MIBRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                     .build().also {INSTANCE = it}
             }
 

@@ -19,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -28,6 +29,11 @@ import com.indeavour.coreader.ui.theme.Teal
 import com.indeavour.coreader.viewmodel.GroupViewModel
 import com.indeavour.coreader.viewmodel.ReaderViewModel
 import com.google.firebase.auth.FirebaseAuth
+import com.indeavour.coreader.AppRoomDatabase
+import com.indeavour.coreader.model.room.UserPreferences
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import org.readium.r2.shared.publication.Locator
 
@@ -39,11 +45,31 @@ fun GroupProgressScreen(onBack: () -> Unit) {
     val activeGroupId by groupViewModel.activeGroupId.collectAsState()
     val usernames by groupViewModel.usernames.collectAsState()
 
+    val context = LocalContext.current
+    val database = remember { AppRoomDatabase.getDatabase(context) }
+    val scope = rememberCoroutineScope()
+
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var isSearchActive by rememberSaveable { mutableStateOf(false) }
     var filterType by rememberSaveable { mutableStateOf("All") }
     var showFilterDialog by remember { mutableStateOf(false) }
     var displayMoreMenu by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        database.userPreferencesDao().getPreferences().collect { prefs ->
+            prefs?.let {
+                filterType = it.groupFilter
+            }
+        }
+    }
+
+    fun updateGroupFilter(newFilter: String) {
+        filterType = newFilter
+        scope.launch(Dispatchers.IO) {
+            val currentPrefs = database.userPreferencesDao().getPreferences().first() ?: UserPreferences()
+            database.userPreferencesDao().insertOrUpdate(currentPrefs.copy(groupFilter = newFilter))
+        }
+    }
 
     // Trigger name fetching for all users in the book progression
     LaunchedEffect(groupBooks) {
@@ -116,13 +142,13 @@ fun GroupProgressScreen(onBack: () -> Unit) {
                 title = { Text("Filter Books", color = MaterialTheme.colorScheme.secondary) },
                 text = {
                     Column {
-                        val filterOptions = listOf("All", "In Progress", "Unread", "Completed")
+                        val filterOptions = listOf("All", "In Progress", "Not Completed", "Unread", "Completed")
                         filterOptions.forEach { type ->
                             Row(
                                 Modifier
                                     .fillMaxWidth()
                                     .clickable { 
-                                        filterType = type
+                                        updateGroupFilter(type)
                                         showFilterDialog = false 
                                     }
                                     .padding(12.dp),
@@ -173,6 +199,7 @@ fun GroupProgressScreen(onBack: () -> Unit) {
 
                     val matchesFilter = when(filterType) {
                         "In Progress" -> progress > 0.005f && progress < 0.995f
+                        "Not Completed" -> progress < 0.995f
                         "Unread" -> progress <= 0.005f
                         "Completed" -> progress >= 0.995f
                         else -> true
