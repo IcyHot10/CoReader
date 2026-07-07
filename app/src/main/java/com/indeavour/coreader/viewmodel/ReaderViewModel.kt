@@ -294,16 +294,6 @@ class ReaderViewModel(
 
                         Log.d("ReaderViewModel", "userStats sync successful for $uid")
 
-                        // Also log raw activity for historical record
-                        firestore.collection("users").document(uid).collection("readingActivity").add(
-                            ReadingActivity(
-                                bookId = bookId,
-                                timestamp = now,
-                                durationSeconds = secondsToSave,
-                                isCompletedEvent = newlyCompleted
-                            )
-                        ).await()
-
                     } catch (e: Exception) {
                         Log.e("ReaderViewModel", "Failed to sync reading activity to Firestore", e)
                     }

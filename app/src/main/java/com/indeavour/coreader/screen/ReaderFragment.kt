@@ -1003,6 +1003,17 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     style = MaterialTheme.typography.bodyLarge,
                     color = colorScheme.secondary
                 )
+
+                note.locator.text.highlight?.let {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "\"$it\"",
+                        style = MaterialTheme.typography.bodySmall.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic),
+                        color = colorScheme.secondary.copy(alpha = 0.6f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 
                 if (note.replies.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(8.dp))
@@ -1043,17 +1054,6 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                             }
                         }
                     }
-                }
-
-                note.locator.text.highlight?.let {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "\"$it\"",
-                        style = MaterialTheme.typography.bodySmall.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic),
-                        color = colorScheme.secondary.copy(alpha = 0.6f),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
             }
             
