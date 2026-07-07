@@ -9,6 +9,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.indeavour.coreader.AppRoomDatabase
 import com.indeavour.coreader.model.firebase.BookModel
+import com.indeavour.coreader.model.firebase.NoteModel
+import com.indeavour.coreader.model.firebase.ReplyModel
 import com.indeavour.coreader.model.firebase.GroupBook
 import com.indeavour.coreader.model.firebase.UserModel
 import com.indeavour.coreader.model.firebase.UserStats
@@ -72,7 +74,8 @@ class ReaderViewModel(
         val locator: Locator,
         val userId: String,
         val content: String,
-        val color: Int = 0x66FFFF00
+        val color: Int = 0x66FFFF00,
+        val replies: List<ReplyModel> = emptyList()
     )
 
     private val _selectedHighlightColor = MutableStateFlow(0x66FFFF00)
@@ -645,17 +648,18 @@ class ReaderViewModel(
                                                 }
                                             } catch (ex: Exception) {}
                                         }
-                                        bookModel.notes.forEach { entryJson ->
+                                        bookModel.notes.forEach { noteModel ->
                                             try {
-                                                val obj = org.json.JSONObject(entryJson)
+                                                val obj = org.json.JSONObject(noteModel.note)
                                                 val locJson = obj.optJSONObject("locator")
                                                 val hUserId = obj.optString("userId", memberId)
                                                 val content = obj.optString("content", "")
                                                 val hColor = obj.optInt("color", 0x66FFFF00)
                                                 val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
                                                 if (locator != null) {
-                                                    notesList.add(NoteData(locator, hUserId, content, hColor))
+                                                    notesList.add(NoteData(locator, hUserId, content, hColor, noteModel.replies))
                                                     userIdsToFetch.add(hUserId)
+                                                    noteModel.replies.forEach { userIdsToFetch.add(it.userId) }
                                                 }
                                             } catch (ex: Exception) {}
                                         }
@@ -700,6 +704,7 @@ class ReaderViewModel(
                             val notesList = mutableListOf<NoteData>()
                             
                             val userBook = userModel?.books?.get(bookKey)
+                            val userIdsToFetchLocal = mutableSetOf<String>()
                             userBook?.highlights?.forEach { entryJson ->
                                 try {
                                     val obj = org.json.JSONObject(entryJson)
@@ -712,21 +717,39 @@ class ReaderViewModel(
                                     }
                                 } catch (e: Exception) {}
                             }
-                            userBook?.notes?.forEach { entryJson ->
+                            userBook?.notes?.forEach { noteModel ->
                                 try {
-                                    val obj = org.json.JSONObject(entryJson)
+                                    val obj = org.json.JSONObject(noteModel.note)
                                     val locJson = obj.optJSONObject("locator")
                                     val hUserId = obj.optString("userId", uid)
                                     val content = obj.optString("content", "")
                                     val hColor = obj.optInt("color", 0x66FFFF00)
                                     val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
                                     if (locator != null) {
-                                        notesList.add(NoteData(locator, hUserId, content, hColor))
+                                        notesList.add(NoteData(locator, hUserId, content, hColor, noteModel.replies))
+                                        noteModel.replies.forEach { userIdsToFetchLocal.add(it.userId) }
                                     }
                                 } catch (e: Exception) {}
                             }
 
                             val nameMap = _usernames.value.toMutableMap()
+                            var changed = false
+                            userIdsToFetchLocal.forEach { id ->
+                                if (!nameMap.containsKey(id)) {
+                                    try {
+                                        val userSnapshot = firestore.collection("users").document(id).get().await()
+                                        nameMap[id] = userSnapshot.getString("username") ?: "Unknown"
+                                        changed = true
+                                    } catch (ex: Exception) {
+                                        nameMap[id] = "Unknown"
+                                        changed = true
+                                    }
+                                }
+                            }
+                            if (changed) {
+                                _usernames.value = nameMap
+                            }
+
                             if (!nameMap.containsKey(uid)) {
                                 nameMap[uid] = userModel?.username ?: "Unknown"
                                 _usernames.value = nameMap
@@ -877,7 +900,7 @@ class ReaderViewModel(
                         }
 
                         val currentNotes = userBook.notes.toMutableList()
-                        currentNotes.add(noteEntry)
+                        currentNotes.add(NoteModel(note = noteEntry))
                         userBooks[bookKey] = userBook.copy(notes = currentNotes)
                         groupProgression[uid] = userBooks
                         
@@ -894,7 +917,7 @@ class ReaderViewModel(
                             addedTimestamp = System.currentTimeMillis()
                         )
                         val currentNotes = userBook.notes.toMutableList()
-                        currentNotes.add(noteEntry)
+                        currentNotes.add(NoteModel(note = noteEntry))
                         books[bookKey] = userBook.copy(notes = currentNotes)
                         userRef.update("books", books).await()
                     }
@@ -996,9 +1019,9 @@ class ReaderViewModel(
                         val userBooks = groupProgression[targetUid] ?: return@launch
                         val bookModel = BookModel.fromAny(userBooks[bookKey]) ?: return@launch
                         
-                        val updatedNotes = bookModel.notes.filterNot { entryJson ->
+                        val updatedNotes = bookModel.notes.filterNot { noteModel ->
                             try {
-                                val obj = org.json.JSONObject(entryJson)
+                                val obj = org.json.JSONObject(noteModel.note)
                                 val locJson = obj.optJSONObject("locator")
                                 val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
                                 locator == note.locator && obj.optString("content") == note.content
@@ -1018,9 +1041,9 @@ class ReaderViewModel(
                         val books = userModel.books.toMutableMap()
                         val bookModel = books[bookKey] ?: return@launch
                         
-                        val updatedNotes = bookModel.notes.filterNot { entryJson ->
+                        val updatedNotes = bookModel.notes.filterNot { noteModel ->
                             try {
-                                val obj = org.json.JSONObject(entryJson)
+                                val obj = org.json.JSONObject(noteModel.note)
                                 val locJson = obj.optJSONObject("locator")
                                 val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
                                 locator == note.locator && obj.optString("content") == note.content
@@ -1033,6 +1056,175 @@ class ReaderViewModel(
                 }
             } catch (e: Exception) {
                 Log.e("ReaderViewModel", "Failed to delete note from Firestore", e)
+            }
+        }
+    }
+
+    fun addReplyToNote(note: NoteData, replyText: String) {
+        val pub = _publication.value ?: return
+        val uid = auth.currentUser?.uid ?: return
+        val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
+
+        val newReply = ReplyModel(
+            userId = uid,
+            text = replyText,
+            timestamp = System.currentTimeMillis()
+        )
+
+        viewModelScope.launch {
+            try {
+                // Update local state
+                _notes.value = _notes.value.map {
+                    if (it.locator == note.locator && it.content == note.content && it.userId == note.userId) {
+                        it.copy(replies = it.replies + newReply)
+                    } else it
+                }
+                
+                // Collect any new user IDs that might need username fetching
+                val userIdsToFetch = mutableSetOf<String>()
+                userIdsToFetch.add(uid)
+
+                val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
+                if (effectiveGroupId != null) {
+                    val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
+                    val groupBookDoc = groupBookRef.get().await()
+                    if (groupBookDoc.exists()) {
+                        val groupBook = groupBookDoc.toObject(GroupBook::class.java)
+                        val groupProgression = groupBook?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: return@launch
+                        
+                        val targetUid = note.userId
+                        val userBooks = groupProgression[targetUid] ?: return@launch
+                        val bookModel = BookModel.fromAny(userBooks[bookKey]) ?: return@launch
+                        
+                        val updatedNotes = bookModel.notes.map { noteModel ->
+                            try {
+                                val obj = org.json.JSONObject(noteModel.note)
+                                val locJson = obj.optJSONObject("locator")
+                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
+                                if (locator == note.locator && obj.optString("content") == note.content) {
+                                    noteModel.copy(replies = noteModel.replies + newReply)
+                                } else noteModel
+                            } catch (e: Exception) { noteModel }
+                        }
+                        
+                        userBooks[bookKey] = bookModel.copy(notes = updatedNotes)
+                        groupProgression[targetUid] = userBooks
+                        groupBookRef.update("bookProgression", groupProgression).await()
+                    }
+                } else {
+                    val userRef = firestore.collection("users").document(uid)
+                    val userDoc = userRef.get().await()
+                    if (userDoc.exists()) {
+                        val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
+                        val books = userModel.books.toMutableMap()
+                        val bookModel = books[bookKey] ?: return@launch
+                        
+                        val updatedNotes = bookModel.notes.map { noteModel ->
+                            try {
+                                val obj = org.json.JSONObject(noteModel.note)
+                                val locJson = obj.optJSONObject("locator")
+                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
+                                if (locator == note.locator && obj.optString("content") == note.content) {
+                                    noteModel.copy(replies = noteModel.replies + newReply)
+                                } else noteModel
+                            } catch (e: Exception) { noteModel }
+                        }
+                        
+                        books[bookKey] = bookModel.copy(notes = updatedNotes)
+                        userRef.update("books", books).await()
+                    }
+                }
+                
+                // Fetch usernames for any new IDs (like the replier)
+                val nameMap = _usernames.value.toMutableMap()
+                var changed = false
+                userIdsToFetch.forEach { id ->
+                    if (!nameMap.containsKey(id)) {
+                        try {
+                            val userSnapshot = firestore.collection("users").document(id).get().await()
+                            nameMap[id] = userSnapshot.getString("username") ?: "Unknown"
+                            changed = true
+                        } catch (ex: Exception) {
+                            nameMap[id] = "Unknown"
+                            changed = true
+                        }
+                    }
+                }
+                if (changed) {
+                    _usernames.value = nameMap
+                }
+            } catch (e: Exception) {
+                Log.e("ReaderViewModel", "Failed to add reply to Firestore", e)
+            }
+        }
+    }
+
+    fun deleteReply(note: NoteData, reply: ReplyModel) {
+        val pub = _publication.value ?: return
+        val uid = auth.currentUser?.uid ?: return
+        val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
+
+        viewModelScope.launch {
+            try {
+                // Update local state
+                _notes.value = _notes.value.map {
+                    if (it.locator == note.locator && it.content == note.content && it.userId == note.userId) {
+                        it.copy(replies = it.replies.filterNot { r -> r == reply })
+                    } else it
+                }
+
+                val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
+                if (effectiveGroupId != null) {
+                    val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
+                    val groupBookDoc = groupBookRef.get().await()
+                    if (groupBookDoc.exists()) {
+                        val groupBook = groupBookDoc.toObject(GroupBook::class.java)
+                        val groupProgression = groupBook?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: return@launch
+                        
+                        val targetUid = note.userId
+                        val userBooks = groupProgression[targetUid] ?: return@launch
+                        val bookModel = BookModel.fromAny(userBooks[bookKey]) ?: return@launch
+                        
+                        val updatedNotes = bookModel.notes.map { noteModel ->
+                            try {
+                                val obj = org.json.JSONObject(noteModel.note)
+                                val locJson = obj.optJSONObject("locator")
+                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
+                                if (locator == note.locator && obj.optString("content") == note.content) {
+                                    noteModel.copy(replies = noteModel.replies.filterNot { r -> r.userId == reply.userId && r.text == reply.text && r.timestamp == reply.timestamp })
+                                } else noteModel
+                            } catch (e: Exception) { noteModel }
+                        }
+                        
+                        userBooks[bookKey] = bookModel.copy(notes = updatedNotes)
+                        groupProgression[targetUid] = userBooks
+                        groupBookRef.update("bookProgression", groupProgression).await()
+                    }
+                } else {
+                    val userRef = firestore.collection("users").document(uid)
+                    val userDoc = userRef.get().await()
+                    if (userDoc.exists()) {
+                        val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
+                        val books = userModel.books.toMutableMap()
+                        val bookModel = books[bookKey] ?: return@launch
+                        
+                        val updatedNotes = bookModel.notes.map { noteModel ->
+                            try {
+                                val obj = org.json.JSONObject(noteModel.note)
+                                val locJson = obj.optJSONObject("locator")
+                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
+                                if (locator == note.locator && obj.optString("content") == note.content) {
+                                    noteModel.copy(replies = noteModel.replies.filterNot { r -> r.userId == reply.userId && r.text == reply.text && r.timestamp == reply.timestamp })
+                                } else noteModel
+                            } catch (e: Exception) { noteModel }
+                        }
+                        
+                        books[bookKey] = bookModel.copy(notes = updatedNotes)
+                        userRef.update("books", books).await()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ReaderViewModel", "Failed to delete reply from Firestore", e)
             }
         }
     }

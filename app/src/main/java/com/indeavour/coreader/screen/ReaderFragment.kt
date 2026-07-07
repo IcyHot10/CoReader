@@ -30,6 +30,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Reply
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.TextDecrease
 import androidx.compose.material.icons.filled.TextIncrease
 import androidx.compose.material3.*
@@ -38,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -220,6 +223,109 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                 dismissButton = {
                     TextButton(onClick = { noteLocator = null }) {
                         Text("Cancel", color = Teal)
+                    }
+                },
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        }
+
+        var replyingToNote by remember { mutableStateOf<ReaderViewModel.NoteData?>(null) }
+        LaunchedEffect(Unit) {
+            onShowReplyDialog = { note ->
+                replyingToNote = note
+            }
+        }
+
+        if (replyingToNote != null) {
+            var replyText by remember { mutableStateOf("") }
+            val note = replyingToNote!!
+            val username = viewModel.usernames.collectAsState().value[note.userId] ?: "Unknown User"
+            
+            AlertDialog(
+                onDismissRequest = { replyingToNote = null },
+                title = { Text("Note by $username", color = MaterialTheme.colorScheme.secondary) },
+                text = {
+                    Column {
+                        Text(note.content, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
+                        
+                        if (note.replies.isNotEmpty()) {
+                            Spacer(Modifier.height(8.dp))
+                            Text("Replies:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.7f))
+                            LazyColumn(modifier = Modifier.heightIn(max = 200.dp)) {
+                                items(note.replies) { reply ->
+                                    val replierName = viewModel.usernames.collectAsState().value[reply.userId] ?: "Unknown"
+                                    val currentUserId = FirebaseAuth.getInstance().currentUser?.uid
+                                    val isAdmin by viewModel.isAdmin.collectAsState()
+                                    
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = replierName,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.7f)
+                                            )
+                                            Text(
+                                                text = reply.text,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.secondary
+                                            )
+                                        }
+                                        if (reply.userId == currentUserId || isAdmin) {
+                                            IconButton(
+                                                onClick = { viewModel.deleteReply(note, reply) },
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Delete,
+                                                    contentDescription = "Delete Reply",
+                                                    tint = MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f),
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        Spacer(Modifier.height(16.dp))
+                        TextField(
+                            value = replyText,
+                            onValueChange = { replyText = it },
+                            placeholder = { Text("Add a reply...") },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                                focusedIndicatorColor = Teal,
+                                cursorColor = Teal
+                            )
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (replyText.isNotBlank()) {
+                                viewModel.addReplyToNote(note, replyText)
+                            }
+                            replyingToNote = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Teal)
+                    ) {
+                        Text("Reply", color = MaterialTheme.colorScheme.secondary)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { replyingToNote = null }) {
+                        Text("Close", color = Teal)
                     }
                 },
                 containerColor = MaterialTheme.colorScheme.surface
@@ -760,6 +866,9 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     showNotesSheet = false
                     isInterfaceVisible = false
                 },
+                onReply = { note ->
+                    onShowReplyDialog?.invoke(note)
+                },
                 colorScheme = colorScheme
             )
         }
@@ -790,6 +899,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         isAdmin: Boolean,
         onClose: () -> Unit,
         onNavigate: (Locator) -> Unit,
+        onReply: (ReaderViewModel.NoteData) -> Unit,
         colorScheme: ColorScheme
     ) {
         ModalBottomSheet(
@@ -828,8 +938,10 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                     NoteItem(
                                         note = item,
                                         username = usernames[item.userId] ?: "Unknown",
+                                        usernames = usernames,
                                         isAdmin = isAdmin,
                                         onNavigate = onNavigate,
+                                        onReply = onReply,
                                         onDelete = { viewModel.deleteNote(item) },
                                         colorScheme = colorScheme
                                     )
@@ -860,8 +972,10 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     private fun NoteItem(
         note: ReaderViewModel.NoteData,
         username: String,
+        usernames: Map<String, String>,
         isAdmin: Boolean,
         onNavigate: (Locator) -> Unit,
+        onReply: (ReaderViewModel.NoteData) -> Unit,
         onDelete: () -> Unit,
         colorScheme: ColorScheme
     ) {
@@ -871,7 +985,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                 .fillMaxWidth()
                 .clickable { onNavigate(note.locator) }
                 .padding(vertical = 12.dp, horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.Top
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -889,7 +1003,50 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     style = MaterialTheme.typography.bodyLarge,
                     color = colorScheme.secondary
                 )
+                
+                if (note.replies.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    note.replies.forEach { reply ->
+                        val replierName = usernames[reply.userId] ?: "Unknown"
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = replierName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = colorScheme.secondary.copy(alpha = 0.7f)
+                                )
+                                Text(
+                                    text = reply.text,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colorScheme.secondary.copy(alpha = 0.8f)
+                                )
+                            }
+                            if (reply.userId == currentUserId || isAdmin) {
+                                IconButton(
+                                    onClick = { viewModel.deleteReply(note, reply) },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Delete Reply",
+                                        tint = colorScheme.secondary.copy(alpha = 0.4f),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 note.locator.text.highlight?.let {
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "\"$it\"",
                         style = MaterialTheme.typography.bodySmall.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic),
@@ -899,13 +1056,23 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     )
                 }
             }
-            if (note.userId == currentUserId || isAdmin) {
-                IconButton(onClick = onDelete) {
+            
+            Row {
+                IconButton(onClick = { onReply(note) }) {
                     Icon(
-                        imageVector = Icons.Default.Delete,
-                        contentDescription = "Delete Note",
+                        imageVector = Icons.AutoMirrored.Filled.Chat,
+                        contentDescription = "Reply",
                         tint = colorScheme.secondary.copy(alpha = 0.6f)
                     )
+                }
+                if (note.userId == currentUserId || isAdmin) {
+                    IconButton(onClick = onDelete) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Delete Note",
+                            tint = colorScheme.secondary.copy(alpha = 0.6f)
+                        )
+                    }
                 }
             }
         }
@@ -985,6 +1152,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
     private var onToggleInterface: (() -> Unit)? = null
     private var onShowNoteDialog: ((Locator) -> Unit)? = null
+    private var onShowReplyDialog: ((ReaderViewModel.NoteData) -> Unit)? = null
 
     private fun showPublication(
         publication: Publication,
