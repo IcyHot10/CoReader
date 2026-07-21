@@ -52,8 +52,19 @@ fun GroupScreen(onBack: () -> Unit) {
         val memberName = usernames[memberId] ?: "this member"
         AlertDialog(
             onDismissRequest = { memberToRemove = null },
-            title = { Text("Remove Member", color = MaterialTheme.colorScheme.secondary) },
-            text = { Text("Are you sure you want to remove '$memberName' from '${group.groupName}'?") },
+            title = { 
+                Text(
+                    "Remove Member", 
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.secondary 
+                ) 
+            },
+            text = { 
+                Text(
+                    "Are you sure you want to remove '$memberName' from '${group.groupName}'?",
+                    style = MaterialTheme.typography.bodyLarge
+                ) 
+            },
             confirmButton = {
                 Button(
                     onClick = {
@@ -66,25 +77,38 @@ fun GroupScreen(onBack: () -> Unit) {
                         }
                         memberToRemove = null
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Teal)
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal),
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
                 ) {
-                    Text("Remove", color = MaterialTheme.colorScheme.secondary)
+                    Text("Remove", color = MaterialTheme.colorScheme.secondary, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { memberToRemove = null }) {
-                    Text("Cancel", color = Teal)
+                    Text("Cancel", color = Teal, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 }
             },
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)
         )
     }
 
     if (groupToLeave != null) {
         AlertDialog(
             onDismissRequest = { groupToLeave = null },
-            title = { Text("Leave Group", color = MaterialTheme.colorScheme.secondary) },
-            text = { Text("Are you sure you want to leave '${groupToLeave?.groupName}'? Your progress will still be saved personally, but you won't be able to see others' progress in this group.") },
+            title = { 
+                Text(
+                    "Leave Group", 
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.secondary 
+                ) 
+            },
+            text = { 
+                Text(
+                    "Are you sure you want to leave '${groupToLeave?.groupName}'? Your progress will still be saved personally, but you won't be able to see others' progress in this group.",
+                    style = MaterialTheme.typography.bodyLarge
+                ) 
+            },
             confirmButton = {
                 Button(
                     onClick = {
@@ -99,26 +123,34 @@ fun GroupScreen(onBack: () -> Unit) {
                         }
                         groupToLeave = null
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Teal)
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal),
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
                 ) {
-                    Text("Leave", color = MaterialTheme.colorScheme.secondary)
+                    Text("Leave", color = MaterialTheme.colorScheme.secondary, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { groupToLeave = null }) {
-                    Text("Cancel", color = Teal)
+                    Text("Cancel", color = Teal, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 }
             },
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)
         )
     }
 
     if (showJoinDialog) {
         AlertDialog(
             onDismissRequest = { showJoinDialog = false },
-            title = { Text("Join Group", color = MaterialTheme.colorScheme.secondary) },
+            title = { 
+                Text(
+                    "Join Group", 
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.secondary 
+                ) 
+            },
             text = {
-                Column {
+                Column(modifier = Modifier.padding(top = 8.dp)) {
                     TextField(
                         value = groupCode,
                         onValueChange = { groupCode = it },
@@ -130,7 +162,8 @@ fun GroupScreen(onBack: () -> Unit) {
                             unfocusedContainerColor = MaterialTheme.colorScheme.surface,
                             focusedIndicatorColor = Teal,
                             cursorColor = Teal
-                        )
+                        ),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
                     )
                 }
             },
@@ -150,28 +183,36 @@ fun GroupScreen(onBack: () -> Unit) {
                         }
                     },
                     enabled = groupCode.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Teal)
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal),
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
                 ) {
-                    Text("Join", color = MaterialTheme.colorScheme.secondary)
+                    Text("Join", color = MaterialTheme.colorScheme.secondary, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(
                     onClick = { showJoinDialog = false }
                 ) {
-                    Text("Cancel", color = Teal)
+                    Text("Cancel", color = Teal, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 }
             },
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)
         )
     }
 
     if (showCreateDialog) {
         AlertDialog(
             onDismissRequest = { showCreateDialog = false },
-            title = { Text("Create New Group", color = MaterialTheme.colorScheme.secondary) },
+            title = { 
+                Text(
+                    "Create New Group", 
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.secondary 
+                ) 
+            },
             text = {
-                Column {
+                Column(modifier = Modifier.padding(top = 8.dp)) {
                     TextField(
                         value = groupName,
                         onValueChange = { groupName = it },
@@ -183,7 +224,8 @@ fun GroupScreen(onBack: () -> Unit) {
                             unfocusedContainerColor = MaterialTheme.colorScheme.surface,
                             focusedIndicatorColor = Teal,
                             cursorColor = Teal
-                        )
+                        ),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
                     )
                 }
             },
@@ -203,19 +245,21 @@ fun GroupScreen(onBack: () -> Unit) {
                         }
                     },
                     enabled = groupName.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Teal)
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal),
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
                 ) {
-                    Text("Create", color = MaterialTheme.colorScheme.secondary)
+                    Text("Create", color = MaterialTheme.colorScheme.secondary, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(
                     onClick = { showCreateDialog = false }
                 ) {
-                    Text("Cancel", color = Teal)
+                    Text("Cancel", color = Teal, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 }
             },
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)
         )
     }
 

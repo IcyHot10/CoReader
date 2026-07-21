@@ -50,6 +50,8 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import com.indeavour.coreader.model.firebase.UserModel
 import com.indeavour.coreader.model.firebase.GroupBook
 import androidx.compose.runtime.Composable
@@ -207,9 +209,6 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
         mutableStateOf(false)
     }
 
-    val toggleMoreMenu: () -> Unit = {
-        displayMoreMenu = !displayMoreMenu
-    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -334,10 +333,24 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                             }
                         }
                     } else {
-                        IconButton(onClick = { displayMoreMenu = !displayMoreMenu }) {
-                            Icon(
-                                imageVector = Icons.Filled.MoreVert,
-                                contentDescription = "Open More"
+                        Box {
+                            IconButton(onClick = { displayMoreMenu = !displayMoreMenu }) {
+                                Icon(
+                                    imageVector = Icons.Filled.MoreVert,
+                                    contentDescription = "Open More"
+                                )
+                            }
+                            MoreMenu(
+                                expanded = displayMoreMenu,
+                                onDismissRequest = { displayMoreMenu = false },
+                                onSearchClick = {
+                                    isSearchActive = true
+                                    displayMoreMenu = false
+                                },
+                                onFilterClick = {
+                                    showFilterDialog = true
+                                    displayMoreMenu = false
+                                }
                             )
                         }
                     }
@@ -359,9 +372,15 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
             if (showFilterDialog) {
                 AlertDialog(
                     onDismissRequest = { showFilterDialog = false },
-                    title = { Text("Filter Books", color = MaterialTheme.colorScheme.secondary) },
+                    title = { 
+                        Text(
+                            "Filter Books", 
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = MaterialTheme.colorScheme.secondary 
+                        ) 
+                    },
                     text = {
-                        Column {
+                        Column(modifier = Modifier.padding(top = 8.dp)) {
                             val filterOptions = listOf(
                                 "All", 
                                 "Favourites",
@@ -373,33 +392,41 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                                 "Completed"
                             )
                             filterOptions.forEach { type ->
+                                val isSelected = filterType == type
                                 Row(
                                     Modifier
                                         .fillMaxWidth()
+                                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
                                         .clickable { 
                                             updateLibraryFilter(type)
                                             showFilterDialog = false 
                                         }
-                                        .padding(12.dp),
+                                        .padding(vertical = 4.dp, horizontal = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     RadioButton(
-                                        selected = filterType == type, 
+                                        selected = isSelected, 
                                         onClick = null,
                                         colors = RadioButtonDefaults.colors(selectedColor = Teal)
                                     )
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(type, color = MaterialTheme.colorScheme.onSurface)
+                                    Spacer(Modifier.width(12.dp))
+                                    Text(
+                                        type, 
+                                        color = if (isSelected) Teal else MaterialTheme.colorScheme.onSurface,
+                                        style = if (isSelected) MaterialTheme.typography.bodyLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) 
+                                                else MaterialTheme.typography.bodyLarge
+                                    )
                                 }
                             }
                         }
                     },
                     confirmButton = {
                         TextButton(onClick = { showFilterDialog = false }) { 
-                            Text("Close", color = Teal) 
+                            Text("Close", color = Teal, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) 
                         }
                     },
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)
                 )
             }
 
@@ -511,23 +538,6 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                         }
                         HorizontalDivider(thickness = 10.dp, color = Teal, modifier = Modifier.padding(top = 8.dp))
                     }
-                }
-                if (displayMoreMenu) {
-                    MoreMenu(
-                        modifier = Modifier
-                            .width(220.dp)
-                            .align(Alignment.TopEnd)
-                            .padding(top = 8.dp, end = 8.dp),
-                        toggle = toggleMoreMenu,
-                        onSearchClick = {
-                            isSearchActive = true
-                            displayMoreMenu = false
-                        },
-                        onFilterClick = {
-                            showFilterDialog = true
-                            displayMoreMenu = false
-                        }
-                    )
                 }
             }
         }
@@ -803,8 +813,8 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
 
 @Composable
 fun MoreMenu(
-    modifier: Modifier, 
-    toggle: () -> Unit,
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
     onSearchClick: () -> Unit,
     onFilterClick: () -> Unit
 ){
@@ -892,60 +902,35 @@ fun MoreMenu(
                     }
                 }
             }
-            toggle()
+            onDismissRequest()
         }
     )
 
-    Surface(
-        modifier = modifier,
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 8.dp,
-        shadowElevation = 8.dp
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismissRequest,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+        tonalElevation = 8.dp
     ) {
-        Column(modifier = Modifier.padding(vertical = 8.dp)) {
-            MoreMenuItem(
-                icon = Icons.Default.CloudUpload,
-                text = "Import Books",
-                onClick = { launcher.launch(arrayOf("application/epub+zip")) }
-            )
-            MoreMenuItem(
-                icon = Icons.Default.Search,
-                text = "Search",
-                onClick = onSearchClick
-            )
-            MoreMenuItem(
-                icon = Icons.Default.FilterList,
-                text = "Filter",
-                onClick = onFilterClick
-            )
-        }
+        DropdownMenuItem(
+            text = { Text("Import Books", style = MaterialTheme.typography.bodyLarge) },
+            onClick = { launcher.launch(arrayOf("application/epub+zip")) },
+            leadingIcon = { Icon(Icons.Default.CloudUpload, contentDescription = null, tint = Teal, modifier = Modifier.size(24.dp)) }
+        )
+        DropdownMenuItem(
+            text = { Text("Search", style = MaterialTheme.typography.bodyLarge) },
+            onClick = onSearchClick,
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Teal, modifier = Modifier.size(24.dp)) }
+        )
+        DropdownMenuItem(
+            text = { Text("Filter", style = MaterialTheme.typography.bodyLarge) },
+            onClick = onFilterClick,
+            leadingIcon = { Icon(Icons.Default.FilterList, contentDescription = null, tint = Teal, modifier = Modifier.size(24.dp)) }
+        )
     }
 }
 
-@Composable
-fun MoreMenuItem(icon: ImageVector, text: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = Teal,
-            modifier = Modifier.size(24.dp)
-        )
-        Spacer(modifier = Modifier.width(16.dp))
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-    }
-}
 
 @Preview
 @Composable

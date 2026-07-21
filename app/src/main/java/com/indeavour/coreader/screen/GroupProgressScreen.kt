@@ -3,6 +3,7 @@ package com.indeavour.coreader.screen
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -124,11 +125,25 @@ fun GroupProgressScreen(onBack: () -> Unit) {
                     }
                 },
                 actions = {
-                    IconButton(onClick = { displayMoreMenu = !displayMoreMenu }) {
-                        Icon(
-                            imageVector = Icons.Filled.MoreVert,
-                            contentDescription = "Open More",
-                            tint = MaterialTheme.colorScheme.secondary
+                    Box {
+                        IconButton(onClick = { displayMoreMenu = !displayMoreMenu }) {
+                            Icon(
+                                imageVector = Icons.Filled.MoreVert,
+                                contentDescription = "Open More",
+                                tint = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                        ProgressMoreMenu(
+                            expanded = displayMoreMenu,
+                            onDismissRequest = { displayMoreMenu = false },
+                            onSearchClick = {
+                                isSearchActive = true
+                                displayMoreMenu = false
+                            },
+                            onFilterClick = {
+                                showFilterDialog = true
+                                displayMoreMenu = false
+                            }
                         )
                     }
                 },
@@ -139,38 +154,52 @@ fun GroupProgressScreen(onBack: () -> Unit) {
         if (showFilterDialog) {
             AlertDialog(
                 onDismissRequest = { showFilterDialog = false },
-                title = { Text("Filter Books", color = MaterialTheme.colorScheme.secondary) },
+                title = { 
+                    Text(
+                        "Filter Books", 
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.secondary 
+                    ) 
+                },
                 text = {
-                    Column {
+                    Column(modifier = Modifier.padding(top = 8.dp)) {
                         val filterOptions = listOf("All", "In Progress", "Not Completed", "Unread", "Completed")
                         filterOptions.forEach { type ->
+                            val isSelected = filterType == type
                             Row(
                                 Modifier
                                     .fillMaxWidth()
+                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
                                     .clickable { 
                                         updateGroupFilter(type)
                                         showFilterDialog = false 
                                     }
-                                    .padding(12.dp),
+                                    .padding(vertical = 4.dp, horizontal = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 RadioButton(
-                                    selected = filterType == type, 
+                                    selected = isSelected, 
                                     onClick = null,
                                     colors = RadioButtonDefaults.colors(selectedColor = Teal)
                                 )
-                                Spacer(Modifier.width(8.dp))
-                                Text(type, color = MaterialTheme.colorScheme.onSurface)
+                                Spacer(Modifier.width(12.dp))
+                                Text(
+                                    type, 
+                                    color = if (isSelected) Teal else MaterialTheme.colorScheme.onSurface,
+                                    style = if (isSelected) MaterialTheme.typography.bodyLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) 
+                                            else MaterialTheme.typography.bodyLarge
+                                )
                             }
                         }
                     }
                 },
                 confirmButton = {
                     TextButton(onClick = { showFilterDialog = false }) { 
-                        Text("Close", color = Teal) 
+                        Text("Close", color = Teal, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) 
                     }
                 },
-                containerColor = MaterialTheme.colorScheme.surface
+                containerColor = MaterialTheme.colorScheme.surface,
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp)
             )
         }
 
@@ -235,64 +264,34 @@ fun GroupProgressScreen(onBack: () -> Unit) {
                     }
                 }
             }
-
-            if (displayMoreMenu) {
-                ProgressMoreMenu(
-                    modifier = Modifier
-                        .width(200.dp)
-                        .align(Alignment.TopEnd)
-                        .padding(top = 8.dp, end = 8.dp),
-                    onSearchClick = {
-                        isSearchActive = true
-                        displayMoreMenu = false
-                    },
-                    onFilterClick = {
-                        showFilterDialog = true
-                        displayMoreMenu = false
-                    }
-                )
-            }
         }
     }
 }
 
 @Composable
 fun ProgressMoreMenu(
-    modifier: Modifier,
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
     onSearchClick: () -> Unit,
     onFilterClick: () -> Unit
 ) {
-    Surface(
-        modifier = modifier,
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 8.dp,
-        shadowElevation = 8.dp
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismissRequest,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+        tonalElevation = 8.dp
     ) {
-        Column(modifier = Modifier.padding(vertical = 8.dp)) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onSearchClick)
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.Search, contentDescription = null, tint = Teal, modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(16.dp))
-                Text("Search", style = MaterialTheme.typography.bodyLarge)
-            }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onFilterClick)
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.FilterList, contentDescription = null, tint = Teal, modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(16.dp))
-                Text("Filter", style = MaterialTheme.typography.bodyLarge)
-            }
-        }
+        DropdownMenuItem(
+            text = { Text("Search", style = MaterialTheme.typography.bodyLarge) },
+            onClick = onSearchClick,
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Teal, modifier = Modifier.size(24.dp)) }
+        )
+        DropdownMenuItem(
+            text = { Text("Filter", style = MaterialTheme.typography.bodyLarge) },
+            onClick = onFilterClick,
+            leadingIcon = { Icon(Icons.Default.FilterList, contentDescription = null, tint = Teal, modifier = Modifier.size(24.dp)) }
+        )
     }
 }
 
