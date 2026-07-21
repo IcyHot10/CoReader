@@ -102,20 +102,14 @@ fun StatsScreen(onBack: () -> Unit) {
                     val yearly = stats.yearlyStats[currentYear]
                     
                     // Logic to Repair/Sync inconsistencies:
-                    val finalCompleted = maxOf(completedTotal, stats.lifetimeStats.booksCompleted)
-                    
-                    // Sync lifetime streaks with yearly if lifetime is missing them
-                    val cloudCurrentStreak = if (stats.lifetimeStats.currentStreak == 0 && yearly != null) yearly.currentStreak else stats.lifetimeStats.currentStreak
-                    val cloudLastTimestamp = if (stats.lifetimeStats.lastReadingTimestamp == 0L && yearly != null) yearly.lastReadingTimestamp else stats.lifetimeStats.lastReadingTimestamp
-                    
-                    completedBooks = finalCompleted
-                    currentStreak = cloudCurrentStreak
-                    maxStreak = maxOf(maxStreak, stats.lifetimeStats.maxStreak)
-
-                    // Average progress calculated from Cloud Books
-                    if (userModel != null && userModel.books.isNotEmpty()) {
-                        var cloudTotalProgressionValue = 0f
+                    // We derive Lifetime Overview directly from the Active Cloud Library for consistency
+                    if (userModel != null) {
                         val activeCloudBooks = userModel.books.values.filter { !it.isDeleted }
+                        totalBooks = activeCloudBooks.size
+                        
+                        var cloudTotalProgressionValue = 0f
+                        var cloudCompletedCount = 0
+                        
                         activeCloudBooks.forEach { b ->
                             val p = try {
                                 if (b.progress.isBlank()) 0f
@@ -124,29 +118,42 @@ fun StatsScreen(onBack: () -> Unit) {
                                     json.optJSONObject("locations")?.optDouble("totalProgression", 0.0)?.toFloat() ?: 0f
                                 }
                             } catch (_: Exception) { 0f }
+                            
                             cloudTotalProgressionValue += p
+                            if (p >= 0.995f) cloudCompletedCount++
                         }
+                        
+                        completedBooks = cloudCompletedCount
                         if (activeCloudBooks.isNotEmpty()) {
                             averageProgression = (cloudTotalProgressionValue / activeCloudBooks.size) * 100
+                        } else {
+                            averageProgression = 0f
                         }
                     }
+                    
+                    // Sync lifetime streaks with yearly if lifetime is missing them
+                    val cloudCurrentStreak = if (stats.lifetimeStats.currentStreak == 0 && yearly != null) yearly.currentStreak else stats.lifetimeStats.currentStreak
+                    val cloudLastTimestamp = if (stats.lifetimeStats.lastReadingTimestamp == 0L && yearly != null) yearly.lastReadingTimestamp else stats.lifetimeStats.lastReadingTimestamp
+                    
+                    currentStreak = cloudCurrentStreak
+                    maxStreak = maxOf(maxStreak, stats.lifetimeStats.maxStreak)
 
-                    // Repair Cloud Data if needed
-                    if (stats.lifetimeStats.booksCompleted < finalCompleted || 
+                    // Repair Cloud Data if needed (Sync Firestore record to the derived "current" reality)
+                    if (stats.lifetimeStats.booksCompleted != completedBooks || 
                         stats.lifetimeStats.currentStreak != cloudCurrentStreak ||
                         stats.lifetimeStats.lastReadingTimestamp != cloudLastTimestamp) {
                         
                         val updatedLifetime = stats.lifetimeStats.copy(
-                            booksCompleted = finalCompleted,
+                            booksCompleted = completedBooks,
                             currentStreak = cloudCurrentStreak,
                             lastReadingTimestamp = cloudLastTimestamp,
-                            maxStreak = maxStreak
+                            maxStreak = maxOf(maxStreak, stats.lifetimeStats.maxStreak)
                         )
                         
                         val updatedYearlyMap = stats.yearlyStats.toMutableMap()
                         if (yearly != null) {
                             updatedYearlyMap[currentYear] = yearly.copy(
-                                maxStreak = maxStreak
+                                maxStreak = maxOf(maxStreak, yearly.maxStreak)
                             )
                         }
                         
