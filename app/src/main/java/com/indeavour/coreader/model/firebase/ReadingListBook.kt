@@ -7,6 +7,7 @@ data class ReadingListBook(
     val id: String = "",
     val title: String = "",
     val author: String = "",
+    val description: String = "",
     val addedTimestamp: Long = 0,
     val position: Int = 0,
     val isSuggestion: Boolean = false,

@@ -1,5 +1,8 @@
 package com.indeavour.coreader.model.firebase
 
+import com.google.firebase.firestore.IgnoreExtraProperties
+
+@IgnoreExtraProperties
 data class UserModel(
     val username : String = "",
     val email : String = "",

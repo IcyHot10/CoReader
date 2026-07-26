@@ -1,7 +1,11 @@
 package com.indeavour.coreader.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.Firebase
+import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.GenerativeBackend
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
@@ -13,11 +17,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.UUID
 
 class ReadingListViewModel : ViewModel() {
     private val auth = FirebaseAuth.getInstance()
     private val firestore = FirebaseFirestore.getInstance()
+    
+    // Initialize Firebase AI Logic directly
+    private val generativeModel = Firebase.ai(backend = GenerativeBackend.googleAI())
+        .generativeModel("gemini-3.6-flash")
 
     private val _readingList = MutableStateFlow<List<ReadingListBook>>(emptyList())
     val readingList: StateFlow<List<ReadingListBook>> = _readingList
@@ -25,22 +35,39 @@ class ReadingListViewModel : ViewModel() {
     private val _suggestions = MutableStateFlow<List<ReadingListBook>>(emptyList())
     val suggestions: StateFlow<List<ReadingListBook>> = _suggestions
 
+    private val _pendingSuggestions = MutableStateFlow<List<ReadingListBook>>(emptyList())
+    val pendingSuggestions: StateFlow<List<ReadingListBook>> = _pendingSuggestions
+
     private var readingListListener: ListenerRegistration? = null
 
     init {
+        // Ensure listener starts as soon as we have a user
+        auth.addAuthStateListener {
+            if (it.currentUser != null) {
+                startReadingListListener()
+            }
+        }
         startReadingListListener()
     }
 
     private fun startReadingListListener() {
         val uid = auth.currentUser?.uid ?: return
-        readingListListener?.remove()
+        if (readingListListener != null) return // Already listening
+        
+        Log.d("ReadingListVM", "Starting listener for user: $uid")
         readingListListener = firestore.collection("readingLists").document(uid)
             .addSnapshotListener { snapshot, error ->
-                if (error != null) return@addSnapshotListener
+                if (error != null) {
+                    Log.e("ReadingListVM", "Listener error", error)
+                    return@addSnapshotListener
+                }
+                Log.d("ReadingListVM", "Snapshot received. Raw data: ${snapshot?.data}")
                 val doc = snapshot?.toObject(ReadingListDocument::class.java)
+                Log.d("ReadingListVM", "Doc exists: ${snapshot?.exists()}, Books count: ${doc?.books?.size ?: 0}")
                 val items = doc?.books?.values?.sortedBy { it.position } ?: emptyList()
                 _readingList.value = items.filter { !it.isSuggestion }
                 _suggestions.value = items.filter { it.isSuggestion && !it.isDismissed }
+                Log.d("ReadingListVM", "Filtered: List=${_readingList.value.size}, Suggestions=${_suggestions.value.size}")
             }
     }
 
@@ -105,6 +132,30 @@ class ReadingListViewModel : ViewModel() {
         }
     }
 
+    fun dismissPendingSuggestion(bookId: String) {
+        _pendingSuggestions.value = _pendingSuggestions.value.filter { it.id != bookId }
+    }
+
+    fun acceptSuggestion(suggestion: ReadingListBook) {
+        val uid = auth.currentUser?.uid ?: return
+        val nextPosition = _readingList.value.maxOfOrNull { it.position }?.plus(1) ?: 0
+        val book = suggestion.copy(
+            isSuggestion = false,
+            addedTimestamp = System.currentTimeMillis(),
+            position = nextPosition
+        )
+        
+        viewModelScope.launch {
+            try {
+                firestore.collection("readingLists").document(uid)
+                    .update("books.${book.id}", book).await()
+                dismissPendingSuggestion(book.id)
+            } catch (e: Exception) {
+                Log.e("ReadingListVM", "Failed to accept suggestion", e)
+            }
+        }
+    }
+
     fun convertSuggestionToToRead(bookId: String) {
         val uid = auth.currentUser?.uid ?: return
         if (bookId.isBlank()) return
@@ -142,8 +193,10 @@ class ReadingListViewModel : ViewModel() {
         }
     }
 
-    fun generateAISuggestions() {
+    fun generateAISuggestions(userPrompt: String? = null) {
         val uid = auth.currentUser?.uid ?: return
+        Log.d("ReadingListVM", "Generating AI suggestions directly. Prompt: $userPrompt")
+        
         viewModelScope.launch {
             try {
                 // Fetch user's library to get preferences
@@ -151,42 +204,66 @@ class ReadingListViewModel : ViewModel() {
                 val user = userDoc.toObject(UserModel::class.java)
                 val libraryBooks = user?.books?.values?.filter { !it.isDeleted } ?: emptyList()
                 
-                if (libraryBooks.isEmpty()) return@launch
+                // Context for the AI: what the user is currently reading or has read
+                val contextString = libraryBooks.joinToString(", ") { "${it.title} by ${it.author}" }
 
-                // Basic Mock Logic for Suggestions:
-                // In a real app, this would call a Gemini API with the context of libraryBooks.
-                // For now, we simulate a "similar" book suggestion based on a random author in the library.
-                val seedBook = libraryBooks.random()
-                val bookId = UUID.randomUUID().toString()
-                val nextPosition = _readingList.value.maxOfOrNull { it.position }?.plus(1) ?: 0
-                val suggestion = ReadingListBook(
-                    id = bookId,
-                    title = "The Next ${seedBook.title} Story", // Mock title
-                    author = seedBook.author, // Same author as suggestion
-                    addedTimestamp = System.currentTimeMillis(),
-                    position = nextPosition,
-                    isSuggestion = true
-                )
+                val fullPrompt = """
+                    You are a book recommendation assistant for the "Co Reader" app.
+                    Based on the user's reading history: $contextString
+                    ${if (!userPrompt.isNullOrBlank()) "The user specifically asked for: $userPrompt" else "Suggest 3-5 books they might like next."}
+                    
+                    Return ONLY a JSON array of objects. Each object must have "title", "author", and "description" fields.
+                    The "description" must be a small spoiler-free description of the book.
+                    Do not include any other text or markdown formatting.
+                """.trimIndent()
 
-                // Only add if not already suggested/present
-                val exists = _readingList.value.any { it.title == suggestion.title } || 
-                             _suggestions.value.any { it.title == suggestion.title }
+                Log.d("ReadingListVM", "Calling Gemini...")
+                val response = generativeModel.generateContent(fullPrompt)
+                val responseText = response.text?.trim() ?: ""
+                Log.d("ReadingListVM", "AI Response: $responseText")
+
+                // Clean the response from markdown if present
+                val cleanedJson = responseText.removePrefix("```json").removeSuffix("```").trim()
                 
-                if (!exists) {
-                    val docRef = firestore.collection("readingLists").document(uid)
-                    try {
-                        docRef.update("books.$bookId", suggestion).await()
-                    } catch (e: Exception) {
-                        docRef.set(
-                            mapOf(
-                                "userId" to uid,
-                                "books" to mapOf(bookId to suggestion)
-                            ),
-                            com.google.firebase.firestore.SetOptions.merge()
-                        ).await()
+                val suggestionsArray = try {
+                    JSONArray(cleanedJson)
+                } catch (e: Exception) {
+                    // Fallback if AI didn't follow JSON format strictly
+                    Log.e("ReadingListVM", "JSON parsing failed, trying to extract objects", e)
+                    null
+                }
+
+                if (suggestionsArray != null && suggestionsArray.length() > 0) {
+                    val newPending = mutableListOf<ReadingListBook>()
+                    
+                    for (i in 0 until suggestionsArray.length()) {
+                        val obj = suggestionsArray.getJSONObject(i)
+                        val title = obj.optString("title")
+                        val author = obj.optString("author")
+                        val description = obj.optString("description")
+                        
+                        if (title.isNotBlank()) {
+                            val bookId = UUID.randomUUID().toString()
+                            val suggestion = ReadingListBook(
+                                id = bookId,
+                                title = title,
+                                author = author,
+                                description = description,
+                                isSuggestion = true
+                            )
+                            newPending.add(suggestion)
+                        }
+                    }
+                    
+                    if (newPending.isNotEmpty()) {
+                        _pendingSuggestions.value = newPending
+                        Log.d("ReadingListVM", "Successfully updated pending suggestions")
                     }
                 }
-            } catch (_: Exception) {}
+
+            } catch (e: Exception) {
+                Log.e("ReadingListVM", "Error generating AI suggestions directly", e)
+            }
         }
     }
 }
