@@ -14,7 +14,9 @@ import com.indeavour.coreader.screen.GroupScreen
 import com.indeavour.coreader.screen.GroupProgressScreen
 import com.indeavour.coreader.screen.LibraryScreen
 import com.indeavour.coreader.screen.LoginScreen
+import com.indeavour.coreader.screen.ReadingInsightsScreen
 import com.indeavour.coreader.screen.StatsScreen
+import com.indeavour.coreader.screen.ReadingListScreen
 import com.indeavour.coreader.ui.theme.CoReaderTheme
 import androidx.fragment.app.FragmentActivity
 
@@ -52,12 +54,24 @@ fun AppNavigation(){
                 routeToBook = { navController.navigate("book") },
                 routeToGroup = { navController.navigate("group") },
                 routeToProgress = { navController.navigate("progress") },
+                routeToReadingInsights = { navController.navigate("reading_insights") }
+            )
+        }
+        composable("reading_insights") {
+            ReadingInsightsScreen(
+                onBack = { navController.popBackStack() },
+                routeToReadingList = { navController.navigate("reading_list") },
                 routeToStats = { navController.navigate("stats") }
             )
         }
         composable("group") {
             GroupScreen(onBack = { 
                 navController.popBackStack("library", inclusive = false)
+            })
+        }
+        composable("reading_list") {
+            ReadingListScreen(onBack = {
+                navController.popBackStack()
             })
         }
         composable("progress") {
@@ -67,7 +81,7 @@ fun AppNavigation(){
         }
         composable("stats") {
             StatsScreen(onBack = {
-                navController.popBackStack("library", inclusive = false)
+                navController.popBackStack()
             })
         }
         composable("book") {

@@ -149,7 +149,7 @@ import kotlin.coroutines.CoroutineContext
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit, routeToStats: () -> Unit){
+fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit, routeToReadingInsights: () -> Unit){
     val context = LocalContext.current
     val database by lazy { AppRoomDatabase.getDatabase(context = context) }
     val scope = rememberCoroutineScope()
@@ -217,7 +217,7 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                 modifier = Modifier.width(325.dp),
                 drawerContainerColor = MaterialTheme.colorScheme.primaryContainer
             ) {
-                SideMenuContent(user, userViewModel, routeToLogin, routeToGroup, routeToProgress, routeToStats)
+                SideMenuContent(user, userViewModel, routeToLogin, routeToGroup, routeToProgress, routeToReadingInsights)
             }
         }
     ) {
@@ -660,7 +660,7 @@ fun BookCard(
 }
 
 @Composable
-fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit, routeToStats: () -> Unit){
+fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit, routeToReadingInsights: () -> Unit){
     val auth = FirebaseAuth.getInstance()
     val context = LocalContext.current
     var showEditDialog by remember { mutableStateOf(false) }
@@ -745,7 +745,9 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
             Image(painter = painterResource(R.drawable.library_image), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxWidth())
             
             Spacer(modifier = Modifier.height(16.dp))
+        }
 
+        Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             NavigationDrawerItem(
                 label = { Text("Manage Group") },
                 selected = false,
@@ -758,10 +760,10 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
             )
 
             NavigationDrawerItem(
-                label = { Text("View Group Book Progress") },
+                label = { Text("Reading Insights") },
                 selected = false,
-                onClick = routeToProgress,
-                icon = { Icon(Icons.Default.LineAxis, contentDescription = null) },
+                onClick = routeToReadingInsights,
+                icon = { Icon(Icons.Default.BarChart, contentDescription = null) },
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 colors = NavigationDrawerItemDefaults.colors(
                     unselectedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
@@ -769,10 +771,10 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
             )
 
             NavigationDrawerItem(
-                label = { Text("View Reading Stats") },
+                label = { Text("View Group Book Progress") },
                 selected = false,
-                onClick = routeToStats,
-                icon = { Icon(Icons.Default.BarChart, contentDescription = null) },
+                onClick = routeToProgress,
+                icon = { Icon(Icons.Default.LineAxis, contentDescription = null) },
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 colors = NavigationDrawerItemDefaults.colors(
                     unselectedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
