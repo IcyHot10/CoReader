@@ -1138,6 +1138,11 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         viewModel.saveProgressionToFirestore()
     }
 
+    override fun onResume() {
+        super.onResume()
+        viewModel.resumeReadingSession()
+    }
+
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 

@@ -22,6 +22,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.firstOrNull
@@ -38,6 +39,10 @@ class ReaderViewModel(
 
     private val auth = FirebaseAuth.getInstance()
     private val firestore = FirebaseFirestore.getInstance()
+
+    // Persistence launched from teardown paths (onCleared/onPause) must outlive
+    // viewModelScope, which is already cancelled when onCleared runs.
+    private val saveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _publication = MutableStateFlow<Publication?>(null)
     val publication: StateFlow<Publication?> = _publication
@@ -163,6 +168,11 @@ class ReaderViewModel(
         wasCompletedAtStart = initialProgress >= 0.995f
     }
 
+    private fun toLocalDate(millis: Long): java.time.LocalDate =
+        java.time.Instant.ofEpochMilli(millis)
+            .atZone(java.time.ZoneId.systemDefault())
+            .toLocalDate()
+
     private fun syncReadingProgress(isCompletedNow: Boolean, forceSync: Boolean = false) {
         if (lastTickTime == 0L) return // Session not started
 
@@ -184,8 +194,8 @@ class ReaderViewModel(
             
             val bookId = loadedBookId ?: return
             val uid = auth.currentUser?.uid ?: return
-            
-            viewModelScope.launch(Dispatchers.IO) {
+
+            saveScope.launch {
                 // 1. Save to Local Room
                 val database = AppRoomDatabase.getDatabase(getApplication())
                 database.readingActivityDao().insert(ReadingActivity(
@@ -231,39 +241,42 @@ class ReaderViewModel(
                                 }
                             }
                             
-                            val calendar = java.util.Calendar.getInstance()
-                            val yearKey = calendar.get(java.util.Calendar.YEAR).toString()
-                            val todayMillis = calendar.apply {
-                                set(java.util.Calendar.HOUR_OF_DAY, 0)
-                                set(java.util.Calendar.MINUTE, 0)
-                                set(java.util.Calendar.SECOND, 0)
-                                set(java.util.Calendar.MILLISECOND, 0)
-                            }.timeInMillis
+                            val today = java.time.LocalDate.now()
+                            val yearKey = today.year.toString()
 
                             // Update Yearly Stats
                             val currentYearlyStats = statsDoc.yearlyStats[yearKey] ?: UserStats()
-                            
-                            // Update Streak logic
-                            val lastReading = currentYearlyStats.lastReadingTimestamp
-                            var newStreak = currentYearlyStats.currentStreak
+
+                            // Update Streak logic.
+                            // Continuity is read from lifetime stats, not yearly: the yearly bucket is
+                            // empty on January 1st, which would wipe a streak spanning New Year.
+                            // Yearly is the fallback for documents written before lifetime carried the streak.
+                            val lifetimeStats = statsDoc.lifetimeStats
+                            val lastReading = if (lifetimeStats.lastReadingTimestamp > 0) {
+                                lifetimeStats.lastReadingTimestamp
+                            } else {
+                                currentYearlyStats.lastReadingTimestamp
+                            }
+                            var newStreak = if (lifetimeStats.currentStreak > 0) {
+                                lifetimeStats.currentStreak
+                            } else {
+                                currentYearlyStats.currentStreak
+                            }
+
                             if (lastReading > 0) {
-                                val lastReadingCal = java.util.Calendar.getInstance().apply { timeInMillis = lastReading }
-                                lastReadingCal.set(java.util.Calendar.HOUR_OF_DAY, 0)
-                                lastReadingCal.set(java.util.Calendar.MINUTE, 0)
-                                lastReadingCal.set(java.util.Calendar.SECOND, 0)
-                                lastReadingCal.set(java.util.Calendar.MILLISECOND, 0)
-                                val lastReadingDay = lastReadingCal.timeInMillis
-                                
-                                val yesterday = todayMillis - java.util.concurrent.TimeUnit.DAYS.toMillis(1)
-                                
+                                // Compare calendar days rather than fixed 24h spans: across a DST
+                                // change yesterday's midnight is 23 or 25 hours ago, not 24.
+                                val lastReadingDay = toLocalDate(lastReading)
                                 when {
-                                    lastReadingDay == todayMillis -> { /* Already read today */ }
-                                    lastReadingDay == yesterday -> newStreak++
+                                    lastReadingDay == today -> { /* Already read today */ }
+                                    lastReadingDay == today.minusDays(1) -> newStreak++
                                     else -> newStreak = 1
                                 }
                             } else {
                                 newStreak = 1
                             }
+                            // A reading event is being recorded now, so the streak covers at least today.
+                            newStreak = newStreak.coerceAtLeast(1)
 
                             val updatedYearlyStats = currentYearlyStats.copy(
                                 secondsRead = currentYearlyStats.secondsRead + secondsToSave,
@@ -306,6 +319,13 @@ class ReaderViewModel(
         val currentProgress = _progress.value.value
         val isCompletedNow = currentProgress >= 0.995f
         syncReadingProgress(isCompletedNow, forceSync = true)
+    }
+
+    // Restart the tick clock so time spent paused/backgrounded is not counted as reading time.
+    fun resumeReadingSession() {
+        if (lastTickTime != 0L) {
+            lastTickTime = System.currentTimeMillis()
+        }
     }
 
     fun setBookReady(ready: Boolean) {
@@ -359,7 +379,7 @@ class ReaderViewModel(
         val bookKey = "${pub.metadata.title}_$authorName"
         val progressionJson = locator.toJSON().toString()
 
-        CoroutineScope(Dispatchers.IO).launch {
+        saveScope.launch {
             try {
                 val userRef = firestore.collection("users").document(uid)
                 val userDoc = userRef.get().await()
@@ -391,10 +411,8 @@ class ReaderViewModel(
 
                     // Update local Room database if we just completed it here
                     if (isCompletedNow && finalCompletedTimestamp > 0) {
-                        viewModelScope.launch {
-                            val database = AppRoomDatabase.getDatabase(getApplication())
-                            database.bookDao().setCompletedTimestamp(loadedBookId ?: 0, finalCompletedTimestamp)
-                        }
+                        val database = AppRoomDatabase.getDatabase(getApplication())
+                        database.bookDao().setCompletedTimestamp(loadedBookId ?: 0, finalCompletedTimestamp)
                     }
 
                     // If in an active group, also update the group's progress model
@@ -586,10 +604,12 @@ class ReaderViewModel(
                 startReadingSession(initialProgress)
                 openBook(bookFile, progression = progressionToUse)
 
-                // Set up real-time listener for group progress and annotations
-                if (currentActiveGroupId != "none") {
+                // Set up real-time listener for group progress and annotations.
+                // Use resolvedGroupId (not currentActiveGroupId): a book that isn't uploaded to the
+                // active group is read in personal mode and must load personal annotations below.
+                if (resolvedGroupId != "none") {
                     val bookKey = "${activeBook.title}_${activeBook.author}"
-                    groupBookListener = firestore.collection("groupBooks").document(currentActiveGroupId)
+                    groupBookListener = firestore.collection("groupBooks").document(resolvedGroupId)
                         .addSnapshotListener { snapshot, e ->
                             if (e != null) {
                                 Log.e("ReaderViewModel", "GroupBook listener failed", e)
