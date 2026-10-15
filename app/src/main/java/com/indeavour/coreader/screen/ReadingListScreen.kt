@@ -160,7 +160,7 @@ fun ReadingListScreen(onBack: () -> Unit) {
                 item {
                     Text("My Reading List", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Teal)
                 }
-                itemsIndexed(readingList) { index, book ->
+                itemsIndexed(readingList, key = { _, book -> book.id }) { index, book ->
                     ReadingListCard(
                         book = book,
                         isFirst = index == 0,

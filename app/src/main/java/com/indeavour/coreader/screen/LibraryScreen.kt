@@ -245,7 +245,7 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                             modifier = Modifier.fillMaxWidth()
                         )
                     } else {
-                        Text(if (isDeletionMode) "${selectedBookIds.size} Selected" else "CoReader Library")
+                        Text(if (isDeletionMode) "${selectedBookIds.size} Selected" else "Kindred Library")
                     }
                 },
                 navigationIcon = {

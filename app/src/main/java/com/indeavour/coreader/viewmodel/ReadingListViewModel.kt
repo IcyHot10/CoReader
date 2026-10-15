@@ -104,12 +104,22 @@ class ReadingListViewModel : ViewModel() {
         val targetIndex = if (moveUp) currentIndex - 1 else currentIndex + 1
         if (targetIndex !in list.indices) return
 
-        val current = list[currentIndex]
-        val target = list[targetIndex]
+        val reorderedList = list.toMutableList()
+        val movedBook = reorderedList.removeAt(currentIndex)
+        reorderedList.add(targetIndex, movedBook)
 
-        viewModelScope.launch {
-            runCatching {
-                readingLists.swapPositions(uid, current.id, current.position, target.id, target.position)
+        val positionUpdates = mutableMapOf<String, Int>()
+        reorderedList.forEachIndexed { index, book ->
+            if (book.position != index) {
+                positionUpdates[book.id] = index
+            }
+        }
+
+        if (positionUpdates.isNotEmpty()) {
+            viewModelScope.launch {
+                runCatching {
+                    readingLists.updatePositions(uid, positionUpdates)
+                }
             }
         }
     }

@@ -47,30 +47,18 @@ class ReadingListRepository(
     }
 
     suspend fun updateFields(uid: String, bookId: String, fields: Map<String, Any?>) {
-        if (bookId.isBlank()) return
+        if (bookId.isBlank() || fields.isEmpty()) return
+        val updates = fields.mapKeys { (key, _) -> "$BOOKS.$bookId.$key" }
         FirestorePaths.readingList(db, uid)
-            .set(mapOf(BOOKS to mapOf(bookId to fields)), SetOptions.merge())
+            .update(updates)
             .await()
     }
 
-    /** Swaps two entries' positions in a single atomic write. */
-    suspend fun swapPositions(
-        uid: String,
-        firstId: String,
-        firstPosition: Int,
-        secondId: String,
-        secondPosition: Int
-    ) {
+    suspend fun updatePositions(uid: String, positionUpdates: Map<String, Int>) {
+        if (positionUpdates.isEmpty()) return
+        val updates = positionUpdates.mapKeys { (bookId, _) -> "$BOOKS.$bookId.position" }
         FirestorePaths.readingList(db, uid)
-            .set(
-                mapOf(
-                    BOOKS to mapOf(
-                        firstId to mapOf("position" to secondPosition),
-                        secondId to mapOf("position" to firstPosition)
-                    )
-                ),
-                SetOptions.merge()
-            )
+            .update(updates)
             .await()
     }
 }

@@ -22,7 +22,13 @@ abstract class AppRoomDatabase: RoomDatabase() {
     companion object {
         @Volatile private var INSTANCE: AppRoomDatabase? = null
 
-        private val MIBRATION_5_6 = object : Migration(5, 6) {
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `book` ADD COLUMN `is_deleted` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `user_preferences` (`id` INTEGER NOT NULL, `font_size` REAL NOT NULL, PRIMARY KEY(`id`))")
             }
@@ -58,7 +64,8 @@ abstract class AppRoomDatabase: RoomDatabase() {
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(context.applicationContext,
                     AppRoomDatabase::class.java, "library_db")
-                    .addMigrations(MIBRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                    .fallbackToDestructiveMigration(dropAllTables = true)
                     .build().also {INSTANCE = it}
             }
 

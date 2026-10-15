@@ -31,6 +31,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Co Reader"
+rootProject.name = "Kindred"
 include(":app")
  
