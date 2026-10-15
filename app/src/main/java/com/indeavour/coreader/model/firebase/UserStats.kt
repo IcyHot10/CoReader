@@ -1,5 +1,8 @@
 package com.indeavour.coreader.model.firebase
 
+import com.google.firebase.firestore.IgnoreExtraProperties
+
+@IgnoreExtraProperties
 data class UserStats(
     val secondsRead: Long = 0,
     val booksCompleted: Int = 0,

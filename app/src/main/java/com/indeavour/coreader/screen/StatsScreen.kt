@@ -20,11 +20,10 @@ import com.indeavour.coreader.AppRoomDatabase
 import com.indeavour.coreader.model.firebase.UserStatsDocument
 import com.indeavour.coreader.model.room.ReadingActivity
 import com.indeavour.coreader.ui.theme.Teal
+import com.indeavour.coreader.repository.StatsRepository
+import com.indeavour.coreader.repository.UserRepository
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
 import kotlinx.coroutines.flow.firstOrNull
-import kotlinx.coroutines.tasks.await
 import org.json.JSONObject
 import java.util.*
 import java.util.concurrent.TimeUnit
@@ -34,6 +33,8 @@ import java.util.concurrent.TimeUnit
 fun StatsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val database = remember { AppRoomDatabase.getDatabase(context) }
+    val statsRepository = remember { StatsRepository() }
+    val userRepository = remember { UserRepository() }
     
     var totalBooks by remember { mutableIntStateOf(0) }
     var completedBooks by remember { mutableIntStateOf(0) }
@@ -72,99 +73,70 @@ fun StatsScreen(onBack: () -> Unit) {
         completedBooks = completedTotal
         averageProgression = if (allBooks.isNotEmpty()) (totalProgressionValue / allBooks.size) * 100 else 0f
 
-        // Yearly and Streak Stats from Firestore (Aggregated Source of Truth)
+        // Yearly and Streak Stats from the cloud (aggregated source of truth)
         val uid = FirebaseAuth.getInstance().currentUser?.uid
         if (uid != null) {
-            try {
-                val db = FirebaseFirestore.getInstance()
-                
-                // 1. Fetch User Model for Total Books in Cloud Library
-                val userDoc = db.collection("users").document(uid).get().await()
-                val userModel = userDoc.toObject(com.indeavour.coreader.model.firebase.UserModel::class.java)
-                if (userModel != null) {
-                    totalBooks = userModel.books.values.count { !it.isDeleted }
+            val userModel = userRepository.user(uid)
+            val stats = statsRepository.safeStats(uid)
+
+            if (userModel != null) {
+                // Lifetime overview is derived from the active cloud library so it agrees with
+                // what the library screen shows.
+                val activeCloudBooks = userModel.books.values.filter { !it.isDeleted }
+                totalBooks = activeCloudBooks.size
+
+                var cloudTotalProgressionValue = 0f
+                var cloudCompletedCount = 0
+                activeCloudBooks.forEach { b ->
+                    val p = try {
+                        if (b.progress.isBlank()) 0f
+                        else JSONObject(b.progress).optJSONObject("locations")
+                            ?.optDouble("totalProgression", 0.0)?.toFloat() ?: 0f
+                    } catch (_: Exception) { 0f }
+
+                    cloudTotalProgressionValue += p
+                    if (p >= 0.995f) cloudCompletedCount++
                 }
 
-                // 2. Fetch User Stats Document
-                val statsRef = db.collection("userStats").document(uid)
-                val statsDocSnapshot = statsRef.get().await()
-                val stats = statsDocSnapshot.toObject(UserStatsDocument::class.java)
-                
-                if (stats != null) {
-                    statsDocument = stats
-                    val currentYear = Calendar.getInstance().get(Calendar.YEAR).toString()
-                    
-                    // Collect all years from yearlyStats keys, plus current year if not present
-                    val years = stats.yearlyStats.keys.toMutableSet()
-                    years.add(currentYear)
-                    availableYears = years.toList().sortedDescending()
-                    
-                    val yearly = stats.yearlyStats[currentYear]
-                    
-                    // Logic to Repair/Sync inconsistencies:
-                    // We derive Lifetime Overview directly from the Active Cloud Library for consistency
-                    if (userModel != null) {
-                        val activeCloudBooks = userModel.books.values.filter { !it.isDeleted }
-                        totalBooks = activeCloudBooks.size
-                        
-                        var cloudTotalProgressionValue = 0f
-                        var cloudCompletedCount = 0
-                        
-                        activeCloudBooks.forEach { b ->
-                            val p = try {
-                                if (b.progress.isBlank()) 0f
-                                else {
-                                    val json = JSONObject(b.progress)
-                                    json.optJSONObject("locations")?.optDouble("totalProgression", 0.0)?.toFloat() ?: 0f
-                                }
-                            } catch (_: Exception) { 0f }
-                            
-                            cloudTotalProgressionValue += p
-                            if (p >= 0.995f) cloudCompletedCount++
-                        }
-                        
-                        completedBooks = cloudCompletedCount
-                        if (activeCloudBooks.isNotEmpty()) {
-                            averageProgression = (cloudTotalProgressionValue / activeCloudBooks.size) * 100
-                        } else {
-                            averageProgression = 0f
-                        }
-                    }
-                    
-                    // Sync lifetime streaks with yearly if lifetime is missing them
-                    val cloudCurrentStreak = if (stats.lifetimeStats.currentStreak == 0 && yearly != null) yearly.currentStreak else stats.lifetimeStats.currentStreak
-                    val cloudLastTimestamp = if (stats.lifetimeStats.lastReadingTimestamp == 0L && yearly != null) yearly.lastReadingTimestamp else stats.lifetimeStats.lastReadingTimestamp
-                    
-                    currentStreak = cloudCurrentStreak
-                    maxStreak = maxOf(maxStreak, stats.lifetimeStats.maxStreak)
-
-                    // Repair Cloud Data if needed (Sync Firestore record to the derived "current" reality)
-                    if (stats.lifetimeStats.booksCompleted != completedBooks || 
-                        stats.lifetimeStats.currentStreak != cloudCurrentStreak ||
-                        stats.lifetimeStats.lastReadingTimestamp != cloudLastTimestamp) {
-                        
-                        val updatedLifetime = stats.lifetimeStats.copy(
-                            booksCompleted = completedBooks,
-                            currentStreak = cloudCurrentStreak,
-                            lastReadingTimestamp = cloudLastTimestamp,
-                            maxStreak = maxOf(maxStreak, stats.lifetimeStats.maxStreak)
-                        )
-                        
-                        val updatedYearlyMap = stats.yearlyStats.toMutableMap()
-                        if (yearly != null) {
-                            updatedYearlyMap[currentYear] = yearly.copy(
-                                maxStreak = maxOf(maxStreak, yearly.maxStreak)
-                            )
-                        }
-                        
-                        statsRef.update(
-                            "lifetimeStats", updatedLifetime,
-                            "yearlyStats", updatedYearlyMap
-                        ).await()
-                    }
+                completedBooks = cloudCompletedCount
+                averageProgression = if (activeCloudBooks.isNotEmpty()) {
+                    (cloudTotalProgressionValue / activeCloudBooks.size) * 100
+                } else {
+                    0f
                 }
-            } catch (e: Exception) {
-                // Fallback would go here if needed
+            }
+
+            if (stats != null) {
+                statsDocument = stats
+                val currentYear = Calendar.getInstance().get(Calendar.YEAR).toString()
+                availableYears = (stats.yearlyStats.keys + currentYear).toList().sortedDescending()
+
+                val yearly = stats.yearlyStats[currentYear]
+
+                // Lifetime carries the streak; yearly is the fallback for older documents.
+                val cloudCurrentStreak = if (stats.lifetimeStats.currentStreak == 0 && yearly != null) {
+                    yearly.currentStreak
+                } else {
+                    stats.lifetimeStats.currentStreak
+                }
+                val cloudLastTimestamp = if (stats.lifetimeStats.lastReadingTimestamp == 0L && yearly != null) {
+                    yearly.lastReadingTimestamp
+                } else {
+                    stats.lifetimeStats.lastReadingTimestamp
+                }
+
+                currentStreak = cloudCurrentStreak
+                maxStreak = maxOf(maxStreak, stats.lifetimeStats.maxStreak)
+
+                statsRepository.reconcileLifetime(
+                    uid = uid,
+                    stats = stats,
+                    currentYear = currentYear,
+                    booksCompleted = completedBooks,
+                    currentStreak = cloudCurrentStreak,
+                    lastReadingTimestamp = cloudLastTimestamp,
+                    maxStreak = maxStreak
+                )
             }
         }
         isLoading = false

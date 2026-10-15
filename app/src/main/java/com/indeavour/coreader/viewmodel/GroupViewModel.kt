@@ -4,22 +4,22 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 import com.indeavour.coreader.model.firebase.BookModel
 import com.indeavour.coreader.model.firebase.GroupBook
-import com.google.firebase.firestore.ListenerRegistration
-import com.indeavour.coreader.model.firebase.GroupMember
 import com.indeavour.coreader.model.firebase.GroupModel
+import com.indeavour.coreader.repository.GroupRepository
+import com.indeavour.coreader.repository.JoinResult
+import com.indeavour.coreader.repository.UserRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
-import java.util.*
 
 class GroupViewModel : ViewModel() {
     private val auth = FirebaseAuth.getInstance()
-    private val firestore = FirebaseFirestore.getInstance()
+    private val groupRepository = GroupRepository()
+    private val users = UserRepository()
 
     private val _groups = MutableStateFlow<List<GroupModel>>(emptyList())
     val groups: StateFlow<List<GroupModel>> = _groups
@@ -33,267 +33,137 @@ class GroupViewModel : ViewModel() {
     private val _usernames = MutableStateFlow<Map<String, String>>(emptyMap())
     val usernames: StateFlow<Map<String, String>> = _usernames
 
+    // One registration per concern, each replaced rather than stacked. Previously the user
+    // listener was re-attached after every mutation and never removed, so each write multiplied
+    // the number of callbacks and the reads they triggered.
+    private var userListener: ListenerRegistration? = null
     private var groupBooksListener: ListenerRegistration? = null
+    private var activeGroupListener: ListenerRegistration? = null
+
+    private var knownGroupIds: List<String> = emptyList()
 
     init {
-        fetchUserGroups()
+        observeUser()
     }
 
-    fun fetchUserGroups() {
+    /**
+     * The single source of change: the user document drives the active group, the group list and
+     * the listeners below, so mutations do not need to re-read anything themselves.
+     */
+    private fun observeUser() {
         val uid = auth.currentUser?.uid ?: return
-
-        firestore.collection("users").document(uid)
-            .addSnapshotListener { userDoc, error ->
-                if (error != null) return@addSnapshotListener
-
-                val newActiveGroupId = userDoc?.getString("activeGroup")?.takeIf { it.isNotBlank() }
-                if (newActiveGroupId != _activeGroupId.value) {
-                    _activeGroupId.value = newActiveGroupId
-                    if (newActiveGroupId != null) {
-                        listenToGroupBooks(newActiveGroupId)
-                        fetchGroupUsernames(newActiveGroupId)
-                    } else {
-                        groupBooksListener?.remove()
-                        _groupBooks.value = emptyMap()
-                        _usernames.value = emptyMap()
-                    }
-                }
-                
-                val groupIDs = (userDoc?.get("groupIDs") as? List<String> ?: emptyList()).filter { it.isNotBlank() }
-
-                if (groupIDs.isEmpty()) {
-                    _groups.value = emptyList()
-                    return@addSnapshotListener
-                }
-
-                viewModelScope.launch {
-                    try {
-                        val groupList = mutableListOf<GroupModel>()
-                        for (id in groupIDs) {
-                            val groupDoc = firestore.collection("groups").document(id).get().await()
-                            groupDoc.toObject(GroupModel::class.java)?.let { group ->
-                                groupList.add(group)
-                                // Fetch usernames for all members in this group
-                                group.groupMembers.keys.forEach { memberId ->
-                                    fetchUsername(memberId)
-                                }
-                            }
-                        }
-                        _groups.value = groupList
-                    } catch (e: Exception) {
-                        // Handle error
-                    }
-                }
+        userListener?.remove()
+        userListener = users.listenUser(uid) { user ->
+            val activeGroupId = user?.activeGroup?.takeIf { it.isNotBlank() }
+            if (activeGroupId != _activeGroupId.value) {
+                _activeGroupId.value = activeGroupId
+                observeActiveGroup(activeGroupId)
             }
+
+            val groupIds = user?.groupIDs?.filter { it.isNotBlank() } ?: emptyList()
+            if (groupIds != knownGroupIds) {
+                knownGroupIds = groupIds
+                loadGroups(groupIds)
+            }
+        }
     }
 
-    private fun listenToGroupBooks(groupCode: String) {
+    private fun loadGroups(groupIds: List<String>) {
+        if (groupIds.isEmpty()) {
+            _groups.value = emptyList()
+            return
+        }
+        viewModelScope.launch {
+            // Fetched concurrently; this used to be one blocking round trip per group, re-run on
+            // every change to the user document.
+            val loaded = groupRepository.groupsByIds(groupIds)
+            _groups.value = loaded
+            resolveUsernames(loaded.flatMap { it.groupMembers.keys })
+        }
+    }
+
+    private fun observeActiveGroup(groupCode: String?) {
         groupBooksListener?.remove()
-        groupBooksListener = firestore.collection("groupBooks").document(groupCode)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    _groupBooks.value = emptyMap()
-                    return@addSnapshotListener
-                }
-                
-                val gb = try {
-                    snapshot?.toObject(GroupBook::class.java)
-                } catch (e: Exception) {
-                    Log.e("GroupViewModel", "Error deserializing GroupBook", e)
-                    null
-                }
-                if (gb == null || gb.bookProgression.isEmpty()) {
-                    _groupBooks.value = emptyMap()
-                    return@addSnapshotListener
-                }
+        groupBooksListener = null
+        activeGroupListener?.remove()
+        activeGroupListener = null
 
-                // Fetch names for all users found in the book progression
-                gb.bookProgression.keys.forEach { userId ->
-                    fetchUsername(userId)
-                }
+        if (groupCode == null) {
+            _groupBooks.value = emptyMap()
+            return
+        }
 
-                // Create a map where key is "Title_Author" and value is the GroupBook itself
-                // This identifies all unique books being read in the group
-                val uniqueBooks = gb.bookProgression.values
-                    .flatMap { it.keys }
-                    .filter { it != "deleted" }
-                    .distinct()
-                    .associateWith { gb }
-                
-                _groupBooks.value = uniqueBooks
+        activeGroupListener = groupRepository.listenGroup(groupCode) { group ->
+            group?.let { resolveUsernames(it.groupMembers.keys) }
+        }
+
+        groupBooksListener = groupRepository.listenGroupBooks(groupCode) { groupBook ->
+            if (groupBook == null || groupBook.bookProgression.isEmpty()) {
+                _groupBooks.value = emptyMap()
+                return@listenGroupBooks
             }
-    }
+            resolveUsernames(groupBook.bookProgression.keys)
 
-    private fun fetchGroupUsernames(groupCode: String) {
-        viewModelScope.launch {
-            try {
-                // Listen to the group document to get member IDs in real-time
-                firestore.collection("groups").document(groupCode)
-                    .addSnapshotListener { snapshot, _ ->
-                        val group = snapshot?.toObject(GroupModel::class.java) ?: return@addSnapshotListener
-                        group.groupMembers.keys.forEach { userId ->
-                            fetchUsername(userId)
-                        }
-                    }
-            } catch (e: Exception) {
-                // Log error
-            }
+            // Key is "<title>_<author>": every distinct book being read in the group.
+            _groupBooks.value = groupBook.bookProgression.values
+                .flatMap { it.keys }
+                .distinct()
+                .associateWith { groupBook }
         }
     }
 
-    fun fetchUsername(userId: String) {
-        if (userId.isBlank()) return
-        if (_usernames.value.containsKey(userId) && _usernames.value[userId] != "Unknown" && _usernames.value[userId] != "Unknown User") return
-
+    /** Resolves display names in one pass; [UserRepository] caches them across ViewModels. */
+    private fun resolveUsernames(userIds: Collection<String>) {
+        val missing = userIds.filter { it.isNotBlank() && !_usernames.value.containsKey(it) }
+        if (missing.isEmpty()) return
         viewModelScope.launch {
-            try {
-                val userDoc = firestore.collection("users").document(userId).get().await()
-                if (userDoc.exists()) {
-                    val name = userDoc.getString("username")
-                    if (!name.isNullOrBlank()) {
-                        _usernames.update { it + (userId to name) }
-                        return@launch
-                    }
-                }
-                // Fallback or if name is null
-                _usernames.update { it + (userId to "Unknown User") }
-            } catch (e: Exception) {
-                Log.e("GroupViewModel", "Error fetching username for $userId", e)
-                _usernames.update { it + (userId to "Error loading name") }
-            }
+            val resolved = users.usernames(missing)
+            if (resolved.isNotEmpty()) _usernames.update { it + resolved }
         }
+    }
+
+    fun fetchUsername(userId: String) = resolveUsernames(listOf(userId))
+
+    override fun onCleared() {
+        super.onCleared()
+        userListener?.remove()
+        groupBooksListener?.remove()
+        activeGroupListener?.remove()
     }
 
     fun uploadBookToGroup(book: BookModel, onResult: (Boolean) -> Unit) {
-        val uid = auth.currentUser?.uid ?: run {
-            onResult(false)
-            return
-        }
-        val groupCode = _activeGroupId.value ?: run {
-            onResult(false)
-            return
-        }
-        val docId = groupCode
-        val bookKey = "${book.title}_${book.author}"
-        val bookToUpload = book.copy(highlights = emptyList(), notes = emptyList())
+        val uid = auth.currentUser?.uid ?: return onResult(false)
+        val groupCode = _activeGroupId.value ?: return onResult(false)
 
         viewModelScope.launch {
             try {
-                val groupBookRef = firestore.collection("groupBooks").document(docId)
-                val groupBookDoc = groupBookRef.get().await()
-
-                if (groupBookDoc.exists()) {
-                    val groupBook = try {
-                        groupBookDoc.toObject(GroupBook::class.java)
-                    } catch (e: Exception) {
-                        Log.e("GroupViewModel", "Error deserializing GroupBook during upload", e)
-                        null
-                    }
-                    if (groupBook != null) {
-                        val updatedProgression = groupBook.bookProgression.mapValues { it.value.toMutableMap() }.toMutableMap()
-                        val userBooks = updatedProgression[uid] ?: mutableMapOf()
-                        userBooks[bookKey] = bookToUpload
-                        updatedProgression[uid] = userBooks
-                        groupBookRef.update("bookProgression", updatedProgression).await()
-                    } else {
-                        // Fallback or handle corrupt data: overwrite with new structure
-                        val newGroupBook = GroupBook(
-                            groupCode = groupCode,
-                            bookProgression = mapOf(uid to mapOf(bookKey to bookToUpload))
-                        )
-                        groupBookRef.set(newGroupBook).await()
-                    }
-                } else {
-                    val newGroupBook = GroupBook(
-                        groupCode = groupCode,
-                        bookProgression = mapOf(uid to mapOf(bookKey to bookToUpload))
-                    )
-                    groupBookRef.set(newGroupBook).await()
-                }
+                // Annotations live in a subcollection now, so nothing has to be stripped first.
+                groupRepository.upsertGroupBook(groupCode, uid, "${book.title}_${book.author}", book)
                 onResult(true)
             } catch (e: Exception) {
-                Log.e("GroupViewModel", "Failed to leave group: $groupCode", e)
+                Log.e("GroupViewModel", "Failed to upload book to $groupCode", e)
                 onResult(false)
             }
         }
     }
 
-    override fun onCleared() {
-        super.onCleared()
-        groupBooksListener?.remove()
-    }
-
     fun createGroup(groupName: String, onResult: (Boolean, String?) -> Unit) {
         val uid = auth.currentUser?.uid ?: return
         viewModelScope.launch {
-            try {
-                val groupCode = generateUniqueCode()
-                val group = GroupModel(
-                    groupCode = groupCode,
-                    groupName = groupName,
-                    groupMembers = mapOf(uid to GroupMember(admin = true, highlightColour = "0x66FFFF00"))
-                )
-
-                // 1. Add group to user's group list
-                val userRef = firestore.collection("users").document(uid)
-                val userDoc = userRef.get().await()
-                val currentGroups = userDoc.get("groupIDs") as? List<String> ?: emptyList()
-                val updatedGroups = currentGroups + groupCode
-                
-                userRef.update("groupIDs", updatedGroups).await()
-                
-                // Set as active group if none exists
-                if (userDoc.getString("activeGroup") == null) {
-                    userRef.update("activeGroup", groupCode).await()
-                }
-
-                // 2. Create the group document
-                firestore.collection("groups").document(groupCode).set(group).await()
-
-                fetchUserGroups()
-                onResult(true, groupCode)
-            } catch (e: Exception) {
-                onResult(false, null)
-            }
+            val code = groupRepository.createGroup(uid, groupName)
+            // No refetch: the user listener delivers the new group list.
+            onResult(code != null, code)
         }
     }
 
     fun joinGroup(groupCode: String, onResult: (Boolean, String?) -> Unit) {
         val uid = auth.currentUser?.uid ?: return
         viewModelScope.launch {
-            try {
-                val groupDoc = firestore.collection("groups").document(groupCode).get().await()
-                if (!groupDoc.exists()) {
-                    onResult(false, "Group not found")
-                    return@launch
-                }
-
-                val userRef = firestore.collection("users").document(uid)
-                val userDoc = userRef.get().await()
-                val currentGroups = userDoc.get("groupIDs") as? List<String> ?: emptyList()
-
-                if (currentGroups.contains(groupCode)) {
-                    onResult(false, "Already in this group")
-                    return@launch
-                }
-
-                val updatedGroups = currentGroups + groupCode
-                userRef.update("groupIDs", updatedGroups).await()
-
-                // Update group members list
-                val groupRef = firestore.collection("groups").document(groupCode)
-                val group = groupDoc.toObject(GroupModel::class.java)!!
-                val updatedMembers = group.groupMembers.toMutableMap()
-                updatedMembers[uid] = GroupMember(admin = false, highlightColour = "0x66FFFF00")
-                groupRef.update("groupMembers", updatedMembers).await()
-
-                if (userDoc.getString("activeGroup") == null) {
-                    userRef.update("activeGroup", groupCode).await()
-                }
-
-                onResult(true, null)
-            } catch (e: Exception) {
-                onResult(false, e.message)
+            when (val result = groupRepository.joinGroup(uid, groupCode)) {
+                JoinResult.Success -> onResult(true, null)
+                JoinResult.NotFound -> onResult(false, "Group not found")
+                JoinResult.AlreadyMember -> onResult(false, "Already in this group")
+                is JoinResult.Failed -> onResult(false, result.message)
             }
         }
     }
@@ -302,120 +172,37 @@ class GroupViewModel : ViewModel() {
         val uid = auth.currentUser?.uid ?: return
         viewModelScope.launch {
             try {
-                firestore.collection("users").document(uid).update("activeGroup", groupCode).await()
+                groupRepository.setActiveGroup(uid, groupCode)
             } catch (e: Exception) {
-                // Handle error
+                Log.e("GroupViewModel", "Failed to set active group", e)
             }
         }
     }
 
     fun leaveGroup(groupCode: String, onResult: (Boolean) -> Unit) {
         val uid = auth.currentUser?.uid ?: run {
-            Log.e("GroupViewModel", "Leave group failed: No user logged in")
-            onResult(false)
-            return
+            Log.e("GroupViewModel", "Leave group failed: no user logged in")
+            return onResult(false)
         }
-        removeMemberInternal(groupCode, uid, onResult)
+        removeMember(groupCode, uid, onResult)
     }
 
     fun removeMember(groupCode: String, memberId: String, onResult: (Boolean) -> Unit) {
-        removeMemberInternal(groupCode, memberId, onResult)
-    }
-
-    private fun removeMemberInternal(groupCode: String, targetUid: String, onResult: (Boolean) -> Unit) {
         viewModelScope.launch {
-            try {
-                Log.d("GroupViewModel", "Attempting to remove member: $targetUid from group: $groupCode")
-                
-                // 1. Remove from user's group list
-                val userRef = firestore.collection("users").document(targetUid)
-                val userDoc = userRef.get().await()
-                if (userDoc.exists()) {
-                    val currentGroups = userDoc.get("groupIDs") as? List<String> ?: emptyList()
-                    val updatedGroups = currentGroups.filter { it != groupCode }
-                    userRef.update("groupIDs", updatedGroups).await()
-                    
-                    // 2. Clear active group if it's the one being left
-                    if (userDoc.getString("activeGroup") == groupCode) {
-                        val nextActive = updatedGroups.firstOrNull() ?: ""
-                        userRef.update("activeGroup", nextActive).await()
-                    }
-                }
-
-                // 3. Remove from group's member list
-                val groupRef = firestore.collection("groups").document(groupCode)
-                val groupDocSnapshot = groupRef.get().await()
-                if (groupDocSnapshot.exists()) {
-                    val group = groupDocSnapshot.toObject(GroupModel::class.java)!!
-                    val updatedMembers = group.groupMembers.toMutableMap()
-                    updatedMembers.remove(targetUid)
-                    
-                    if (updatedMembers.isEmpty()) {
-                        groupRef.delete().await()
-                        firestore.collection("groupBooks").document(groupCode).delete().await()
-                    } else {
-                        groupRef.update("groupMembers", updatedMembers).await()
-                    }
-                }
-
-                // 4. Remove from groupBooks progression
-                val groupBookRef = firestore.collection("groupBooks").document(groupCode)
-                val groupBookDoc = groupBookRef.get().await()
-                if (groupBookDoc.exists()) {
-                    val groupBook = groupBookDoc.toObject(GroupBook::class.java)
-                    if (groupBook != null) {
-                        val updatedProgression = groupBook.bookProgression.toMutableMap()
-                        updatedProgression.remove(targetUid)
-                        groupBookRef.update("bookProgression", updatedProgression).await()
-                    }
-                }
-
-                fetchUserGroups()
-                onResult(true)
-            } catch (e: Exception) {
-                Log.e("GroupViewModel", "Failed to remove member: $targetUid from $groupCode", e)
-                onResult(false)
-            }
+            onResult(groupRepository.removeMember(groupCode, memberId))
         }
     }
 
-    fun updateAdminStatus(groupCode: String, memberId: String, isAdmin: Boolean, onResult: (Boolean) -> Unit) {
+    fun updateAdminStatus(
+        groupCode: String,
+        memberId: String,
+        isAdmin: Boolean,
+        onResult: (Boolean) -> Unit
+    ) {
         viewModelScope.launch {
-            try {
-                val groupRef = firestore.collection("groups").document(groupCode)
-                val groupDoc = groupRef.get().await()
-                if (groupDoc.exists()) {
-                    val group = groupDoc.toObject(GroupModel::class.java)!!
-                    val updatedMembers = group.groupMembers.toMutableMap()
-                    val member = updatedMembers[memberId]
-                    if (member != null) {
-                        updatedMembers[memberId] = member.copy(admin = isAdmin)
-                        groupRef.update("groupMembers", updatedMembers).await()
-                        fetchUserGroups()
-                        onResult(true)
-                    } else {
-                        onResult(false)
-                    }
-                } else {
-                    onResult(false)
-                }
-            } catch (e: Exception) {
-                Log.e("GroupViewModel", "Failed to update admin status", e)
-                onResult(false)
-            }
+            val updated = groupRepository.setAdmin(groupCode, memberId, isAdmin)
+            if (updated) loadGroups(knownGroupIds)
+            onResult(updated)
         }
-    }
-
-    private suspend fun generateUniqueCode(): String {
-        var code: String
-        var isUnique = false
-        do {
-            code = UUID.randomUUID().toString().substring(0, 6).uppercase()
-            val doc = firestore.collection("groups").document(code).get().await()
-            if (!doc.exists()) {
-                isUnique = true
-            }
-        } while (!isUnique)
-        return code
     }
 }

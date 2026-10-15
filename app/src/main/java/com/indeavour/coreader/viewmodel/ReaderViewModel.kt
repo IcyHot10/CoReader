@@ -8,18 +8,21 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.indeavour.coreader.AppRoomDatabase
+import com.indeavour.coreader.model.firebase.AnnotationModel
 import com.indeavour.coreader.model.firebase.BookModel
-import com.indeavour.coreader.model.firebase.NoteModel
 import com.indeavour.coreader.model.firebase.ReplyModel
-import com.indeavour.coreader.model.firebase.GroupBook
 import com.indeavour.coreader.model.firebase.UserModel
-import com.indeavour.coreader.model.firebase.UserStats
-import com.indeavour.coreader.model.firebase.UserStatsDocument
 import com.indeavour.coreader.model.room.ReadingActivity
 import com.indeavour.coreader.model.room.UserPreferences
 import com.indeavour.coreader.repository.ReaderRepository
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
+import com.indeavour.coreader.repository.AnnotationRepository
+import com.indeavour.coreader.repository.AnnotationScope
+import com.indeavour.coreader.repository.GroupRepository
+import com.indeavour.coreader.repository.LocatorFields
+import com.indeavour.coreader.repository.StatsRepository
+import com.indeavour.coreader.repository.UserRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -38,7 +41,10 @@ class ReaderViewModel(
 ) : AndroidViewModel(application) {
 
     private val auth = FirebaseAuth.getInstance()
-    private val firestore = FirebaseFirestore.getInstance()
+    private val users = UserRepository()
+    private val groups = GroupRepository()
+    private val stats = StatsRepository()
+    private val annotations = AnnotationRepository()
 
     // Persistence launched from teardown paths (onCleared/onPause) must outlive
     // viewModelScope, which is already cancelled when onCleared runs.
@@ -69,17 +75,24 @@ class ReaderViewModel(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
+    /**
+     * [id] is the annotation's document id. Deletes and replies address it directly instead of
+     * re-identifying an annotation by comparing its locator and text, which could not tell two
+     * identical notes apart.
+     */
     data class HighlightData(
+        val id: String,
         val locator: Locator,
         val userId: String,
-        val color: Int = 0x66FFFF00
+        val color: Int = AnnotationModel.DEFAULT_COLOR
     )
 
     data class NoteData(
+        val id: String,
         val locator: Locator,
         val userId: String,
         val content: String,
-        val color: Int = 0x66FFFF00,
+        val color: Int = AnnotationModel.DEFAULT_COLOR,
         val replies: List<ReplyModel> = emptyList()
     )
 
@@ -97,10 +110,9 @@ class ReaderViewModel(
         
         // Save to Firestore
         val uid = auth.currentUser?.uid ?: return
-        CoroutineScope(Dispatchers.IO).launch {
+        saveScope.launch {
             try {
-                firestore.collection("users").document(uid)
-                    .update("lastHighlightColor", color).await()
+                users.setLastHighlightColor(uid, color)
             } catch (e: Exception) {
                 Log.e("ReaderViewModel", "Failed to save lastHighlightColor", e)
             }
@@ -150,9 +162,10 @@ class ReaderViewModel(
     val isAdmin: StateFlow<Boolean> = _isAdmin
 
     private var loadedBookId: Int? = null
-    private var loadedGroupId: String? = "none" // Use "none" as a sentinel for personal
-    private var groupBookListener: com.google.firebase.firestore.ListenerRegistration? = null
-    private var groupInfoListener: com.google.firebase.firestore.ListenerRegistration? = null
+    private var loadedGroupId: String? = NO_GROUP
+    private var groupBookListener: ListenerRegistration? = null
+    private var groupInfoListener: ListenerRegistration? = null
+    private var annotationsListener: ListenerRegistration? = null
 
     private var lastLocator: Locator? = null
     private var sessionStartTime: Long = 0
@@ -165,13 +178,8 @@ class ReaderViewModel(
         sessionStartTime = now
         lastTickTime = now
         secondsAccumulator = 0
-        wasCompletedAtStart = initialProgress >= 0.995f
+        wasCompletedAtStart = initialProgress >= COMPLETION_THRESHOLD
     }
-
-    private fun toLocalDate(millis: Long): java.time.LocalDate =
-        java.time.Instant.ofEpochMilli(millis)
-            .atZone(java.time.ZoneId.systemDefault())
-            .toLocalDate()
 
     private fun syncReadingProgress(isCompletedNow: Boolean, forceSync: Boolean = false) {
         if (lastTickTime == 0L) return // Session not started
@@ -210,114 +218,117 @@ class ReaderViewModel(
                 }
 
                 // 2. Push to Firestore for cross-device sync
-                if (uid != null) {
-                    try {
-                        Log.d("ReaderViewModel", "Starting userStats sync for user: $uid. Seconds: $secondsToSave")
-                        val statsRef = firestore.collection("userStats").document(uid)
-                        val userRef = firestore.collection("users").document(uid)
-                        
-                        firestore.runTransaction { transaction ->
-                            val snapshot = transaction.get(statsRef)
-                            val statsDoc = if (snapshot.exists()) {
-                                snapshot.toObject(UserStatsDocument::class.java) ?: UserStatsDocument(userId = uid)
-                            } else {
-                                UserStatsDocument(userId = uid)
-                            }
-
-                            // Also update the BookModel completed timestamp if needed
-                            if (newlyCompleted) {
-                                val userDoc = transaction.get(userRef)
-                                val userModel = userDoc.toObject(UserModel::class.java)
-                                if (userModel != null) {
-                                    val pub = _publication.value
-                                    val authorName = pub?.metadata?.authors?.firstOrNull()?.name ?: "Unknown Author"
-                                    val bookKey = "${pub?.metadata?.title}_$authorName"
-                                    val userBooks = userModel.books.toMutableMap()
-                                    val book = userBooks[bookKey]
-                                    if (book != null && book.completedTimestamp == 0L) {
-                                        userBooks[bookKey] = book.copy(completedTimestamp = now)
-                                        transaction.update(userRef, "books", userBooks)
-                                    }
-                                }
-                            }
-                            
-                            val today = java.time.LocalDate.now()
-                            val yearKey = today.year.toString()
-
-                            // Update Yearly Stats
-                            val currentYearlyStats = statsDoc.yearlyStats[yearKey] ?: UserStats()
-
-                            // Update Streak logic.
-                            // Continuity is read from lifetime stats, not yearly: the yearly bucket is
-                            // empty on January 1st, which would wipe a streak spanning New Year.
-                            // Yearly is the fallback for documents written before lifetime carried the streak.
-                            val lifetimeStats = statsDoc.lifetimeStats
-                            val lastReading = if (lifetimeStats.lastReadingTimestamp > 0) {
-                                lifetimeStats.lastReadingTimestamp
-                            } else {
-                                currentYearlyStats.lastReadingTimestamp
-                            }
-                            var newStreak = if (lifetimeStats.currentStreak > 0) {
-                                lifetimeStats.currentStreak
-                            } else {
-                                currentYearlyStats.currentStreak
-                            }
-
-                            if (lastReading > 0) {
-                                // Compare calendar days rather than fixed 24h spans: across a DST
-                                // change yesterday's midnight is 23 or 25 hours ago, not 24.
-                                val lastReadingDay = toLocalDate(lastReading)
-                                when {
-                                    lastReadingDay == today -> { /* Already read today */ }
-                                    lastReadingDay == today.minusDays(1) -> newStreak++
-                                    else -> newStreak = 1
-                                }
-                            } else {
-                                newStreak = 1
-                            }
-                            // A reading event is being recorded now, so the streak covers at least today.
-                            newStreak = newStreak.coerceAtLeast(1)
-
-                            val updatedYearlyStats = currentYearlyStats.copy(
-                                secondsRead = currentYearlyStats.secondsRead + secondsToSave,
-                                booksCompleted = currentYearlyStats.booksCompleted + (if (newlyCompleted) 1 else 0),
-                                currentStreak = newStreak,
-                                maxStreak = maxOf(currentYearlyStats.maxStreak, newStreak),
-                                lastReadingTimestamp = now
-                            )
-                            
-                            val updatedYearlyMap = statsDoc.yearlyStats.toMutableMap()
-                            updatedYearlyMap[yearKey] = updatedYearlyStats
-                            
-                            // Also update lifetime
-                            val updatedLifetime = statsDoc.lifetimeStats.copy(
-                                secondsRead = statsDoc.lifetimeStats.secondsRead + secondsToSave,
-                                booksCompleted = statsDoc.lifetimeStats.booksCompleted + (if (newlyCompleted) 1 else 0),
-                                currentStreak = newStreak,
-                                maxStreak = maxOf(statsDoc.lifetimeStats.maxStreak, newStreak),
-                                lastReadingTimestamp = now
-                            )
-
-                            transaction.set(statsRef, statsDoc.copy(
-                                yearlyStats = updatedYearlyMap,
-                                lifetimeStats = updatedLifetime
-                            ))
-                            Log.d("ReaderViewModel", "Transaction logic prepared for $uid")
-                        }.await()
-
-                        Log.d("ReaderViewModel", "userStats sync successful for $uid")
-
-                    } catch (e: Exception) {
-                        Log.e("ReaderViewModel", "Failed to sync reading activity to Firestore", e)
-                    }
+                try {
+                    val pub = _publication.value
+                    val bookKey = pub?.let { bookKeyOf(it) }
+                    stats.recordReading(
+                        uid = uid,
+                        secondsToSave = secondsToSave,
+                        newlyCompleted = newlyCompleted,
+                        nowMillis = now,
+                        bookKey = bookKey
+                    )
+                } catch (e: Exception) {
+                    Log.e("ReaderViewModel", "Failed to sync reading activity to Firestore", e)
                 }
+            }
+        }
+    }
+
+    private fun bookKeyOf(pub: Publication): String {
+        val author = pub.metadata.authors.firstOrNull()?.name ?: UNKNOWN_AUTHOR
+        return "${pub.metadata.title}_$author"
+    }
+
+    private fun annotationScope(groupId: String?, uid: String): AnnotationScope =
+        if (groupId != null && groupId != NO_GROUP && groupId.isNotBlank()) {
+            AnnotationScope.Group(groupId)
+        } else {
+            AnnotationScope.Personal(uid)
+        }
+
+    private fun parseLocator(json: String): Locator? = try {
+        Locator.fromJSON(org.json.JSONObject(json))
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * Streams this book's annotations. In a group that is every member's highlights and notes in
+     * one flat query, rather than reconstructing them from each member's embedded arrays.
+     *
+     * Local edits appear immediately through Firestore's latency compensation, so there is no
+     * separate optimistic copy of the list to keep in step.
+     */
+    private fun observeAnnotations(scope: AnnotationScope, bookKey: String) {
+        annotationsListener?.remove()
+        annotationsListener = annotations.listen(scope, bookKey) { loaded ->
+            val highlights = mutableListOf<HighlightData>()
+            val notes = mutableListOf<NoteData>()
+            loaded.forEach { annotation ->
+                val locator = parseLocator(annotation.locator) ?: return@forEach
+                if (annotation.isNote) {
+                    notes += NoteData(
+                        id = annotation.id,
+                        locator = locator,
+                        userId = annotation.ownerUid,
+                        content = annotation.content,
+                        color = annotation.color,
+                        replies = annotation.replies
+                    )
+                } else {
+                    highlights += HighlightData(
+                        id = annotation.id,
+                        locator = locator,
+                        userId = annotation.ownerUid,
+                        color = annotation.color
+                    )
+                }
+            }
+            _highlights.value = highlights
+            _notes.value = notes
+
+            resolveUsernames(
+                loaded.flatMap { listOf(it.ownerUid) + it.replies.map { reply -> reply.userId } }
+            )
+        }
+    }
+
+    /** Group reading positions; annotations no longer travel on this document. */
+    private fun observeGroupProgress(groupCode: String, bookKey: String, uid: String) {
+        groupBookListener?.remove()
+        groupBookListener = groups.listenGroupBooks(groupCode) { groupBook ->
+            val progress = mutableListOf<MemberProgress>()
+            groupBook?.bookProgression?.forEach { (memberId, memberBooks) ->
+                val book = BookModel.fromAny(memberBooks[bookKey]) ?: return@forEach
+                if (book.progress.isBlank()) return@forEach
+                val locator = parseLocator(book.progress) ?: return@forEach
+                progress += MemberProgress(memberId, _usernames.value[memberId] ?: "", locator)
+                if (memberId == uid) _remoteProgression.value = locator
+            }
+            resolveUsernames(progress.map { it.userId })
+            _groupProgress.value = progress.map {
+                it.copy(username = _usernames.value[it.userId] ?: "")
+            }
+        }
+    }
+
+    private fun resolveUsernames(userIds: Collection<String>) {
+        val missing = userIds.filter { it.isNotBlank() && !_usernames.value.containsKey(it) }
+        if (missing.isEmpty()) return
+        viewModelScope.launch {
+            val resolved = users.usernames(missing)
+            if (resolved.isEmpty()) return@launch
+            _usernames.value = _usernames.value + resolved
+            _groupProgress.value = _groupProgress.value.map {
+                if (it.username.isBlank()) it.copy(username = _usernames.value[it.userId] ?: "") else it
             }
         }
     }
 
     fun endReadingSession() {
         val currentProgress = _progress.value.value
-        val isCompletedNow = currentProgress >= 0.995f
+        val isCompletedNow = currentProgress >= COMPLETION_THRESHOLD
         syncReadingProgress(isCompletedNow, forceSync = true)
     }
 
@@ -347,7 +358,7 @@ class ReaderViewModel(
 
         val progression = locator.locations.totalProgression?.toFloat() ?: (pageIndex.toFloat() / (totalPages - 1).coerceAtLeast(1))
         val percentage = (progression * 100).coerceIn(0f, 100f)
-        val isCompletedNow = progression >= 0.995f
+        val isCompletedNow = progression >= COMPLETION_THRESHOLD
         
         _progress.value = ReadingProgress(
             value = progression,
@@ -371,87 +382,48 @@ class ReaderViewModel(
         }
     }
 
+    /**
+     * Persists the current reading position. Writes only the fields that changed, on both the
+     * personal copy and the group copy, instead of reading the whole library map and writing it
+     * back — which dropped any edit another device had made in between.
+     */
     fun saveProgressionToFirestore() {
         val pub = _publication.value ?: return
         val locator = lastLocator ?: return
         val uid = auth.currentUser?.uid ?: return
-        val authorName = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
-        val bookKey = "${pub.metadata.title}_$authorName"
+        val authorName = pub.metadata.authors.firstOrNull()?.name ?: UNKNOWN_AUTHOR
+        val bookKey = bookKeyOf(pub)
         val progressionJson = locator.toJSON().toString()
+        val isCompletedNow = _progress.value.value >= COMPLETION_THRESHOLD
+        val now = System.currentTimeMillis()
 
         saveScope.launch {
             try {
-                val userRef = firestore.collection("users").document(uid)
-                val userDoc = userRef.get().await()
-                if (userDoc.exists()) {
-                    val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
-                    val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
+                val existing = users.book(uid, bookKey)
+                val completedTimestamp = when {
+                    existing != null && existing.completedTimestamp > 0 -> existing.completedTimestamp
+                    isCompletedNow -> now
+                    else -> 0L
+                }
 
-                    // Always update personal progress in UserModel
-                    val userBooks = userModel.books.toMutableMap()
-                    val userBook = userBooks[bookKey] ?: BookModel(
-                        title = pub.metadata.title ?: "",
-                        author = authorName,
-                        addedTimestamp = System.currentTimeMillis() // Fallback if not exists
-                    )
-                    
-                    val currentProgress = _progress.value.value
-                    val isCompletedNow = currentProgress >= 0.995f
-                    val finalCompletedTimestamp = if (isCompletedNow && userBook.completedTimestamp == 0L) {
-                        System.currentTimeMillis()
-                    } else {
-                        userBook.completedTimestamp
-                    }
+                val fields = mutableMapOf<String, Any?>(
+                    "title" to (pub.metadata.title ?: ""),
+                    "author" to authorName,
+                    "progress" to progressionJson,
+                    "addedTimestamp" to (existing?.addedTimestamp ?: now)
+                )
+                if (completedTimestamp > 0) fields["completedTimestamp"] = completedTimestamp
 
-                    userBooks[bookKey] = userBook.copy(
-                        progress = progressionJson,
-                        completedTimestamp = finalCompletedTimestamp
-                    )
-                    userRef.update("books", userBooks).await()
+                users.mergeBookFields(uid, bookKey, fields)
 
-                    // Update local Room database if we just completed it here
-                    if (isCompletedNow && finalCompletedTimestamp > 0) {
-                        val database = AppRoomDatabase.getDatabase(getApplication())
-                        database.bookDao().setCompletedTimestamp(loadedBookId ?: 0, finalCompletedTimestamp)
-                    }
+                if (isCompletedNow && completedTimestamp > 0) {
+                    val database = AppRoomDatabase.getDatabase(getApplication())
+                    database.bookDao().setCompletedTimestamp(loadedBookId ?: 0, completedTimestamp)
+                }
 
-                    // If in an active group, also update the group's progress model
-                    if (effectiveGroupId != null) {
-                        val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
-                        val groupBookDoc = groupBookRef.get().await()
-
-                        val groupProgression = if (groupBookDoc.exists()) {
-                            val gb = groupBookDoc.toObject(GroupBook::class.java)
-                            gb?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: mutableMapOf()
-                        } else {
-                            mutableMapOf()
-                        }
-
-                        val userBooks = groupProgression[uid] ?: mutableMapOf()
-                        val existingInGroup = BookModel.fromAny(userBooks[bookKey])
-                        val groupUserBook = if (existingInGroup != null && existingInGroup.title == pub.metadata.title && existingInGroup.author == authorName) {
-                            existingInGroup.copy(
-                                progress = progressionJson,
-                                completedTimestamp = if (isCompletedNow && existingInGroup.completedTimestamp == 0L) finalCompletedTimestamp else existingInGroup.completedTimestamp
-                            )
-                        } else {
-                            BookModel(
-                                title = pub.metadata.title ?: "",
-                                author = authorName,
-                                progress = progressionJson,
-                                addedTimestamp = userBook.addedTimestamp,
-                                completedTimestamp = if (isCompletedNow) finalCompletedTimestamp else 0L
-                            )
-                        }
-                        userBooks[bookKey] = groupUserBook
-                        groupProgression[uid] = userBooks
-
-                        if (groupBookDoc.exists()) {
-                            groupBookRef.update("bookProgression", groupProgression).await()
-                        } else {
-                            groupBookRef.set(GroupBook(groupCode = effectiveGroupId, bookProgression = groupProgression)).await()
-                        }
-                    }
+                val groupId = loadedGroupId?.takeIf { it != NO_GROUP && it.isNotBlank() }
+                if (groupId != null) {
+                    groups.mergeGroupBookFields(groupId, uid, bookKey, fields)
                 }
             } catch (e: Exception) {
                 Log.e("ReaderViewModel", "Failed to update Firestore progress", e)
@@ -463,6 +435,7 @@ class ReaderViewModel(
         super.onCleared()
         groupBookListener?.remove()
         groupInfoListener?.remove()
+        annotationsListener?.remove()
         endReadingSession()
         saveProgressionToFirestore()
     }
@@ -473,42 +446,27 @@ class ReaderViewModel(
             val database = AppRoomDatabase.getDatabase(getApplication())
             val activeBook = database.bookDao().getActive()
             Log.d("ReaderViewModel", "Active book: $activeBook")
-            
+
             if (activeBook == null) {
                 _error.value = "No active book found"
                 return@launch
             }
 
-            // Fetch user model to check current active group
             val uid = auth.currentUser?.uid
-            val userDoc = if (uid != null) firestore.collection("users").document(uid).get().await() else null
-            val userModel = userDoc?.toObject(UserModel::class.java)
-            val currentActiveGroupId = userModel?.activeGroup?.takeIf { it.isNotBlank() } ?: "none"
-
-            // Check if this book is actually in the group's uploaded books
-            var resolvedGroupId = currentActiveGroupId
-            if (resolvedGroupId != "none") {
+            val userModel: UserModel? = if (uid != null) {
                 try {
-                    val groupBookDoc = firestore.collection("groupBooks").document(resolvedGroupId).get().await()
-                    if (groupBookDoc.exists()) {
-                        val groupBook = groupBookDoc.toObject(GroupBook::class.java)
-                        val bookExistsInGroup = groupBook?.bookProgression?.values?.any { userBooks ->
-                            userBooks.values.any { BookModel.fromAny(it)?.let { bm -> bm.title == activeBook.title && bm.author == activeBook.author } ?: false }
-                        } ?: false
-
-                        if (!bookExistsInGroup) {
-                            Log.d("ReaderViewModel", "Book ${activeBook.title} not uploaded to group $resolvedGroupId. Using personal mode.")
-                            resolvedGroupId = "none"
-                        }
-                    } else {
-                        Log.d("ReaderViewModel", "GroupBook doc for $resolvedGroupId not found. Using personal mode.")
-                        resolvedGroupId = "none"
-                    }
+                    users.user(uid)
                 } catch (e: Exception) {
-                    Log.e("ReaderViewModel", "Error checking book in group", e)
-                    resolvedGroupId = "none"
+                    Log.e("ReaderViewModel", "Failed to load user", e)
+                    null
                 }
+            } else {
+                null
             }
+
+            val bookKey = "${activeBook.title}_${activeBook.author}"
+            val activeGroupId = userModel?.activeGroup?.takeIf { it.isNotBlank() } ?: NO_GROUP
+            val resolvedGroupId = resolveGroupForBook(activeGroupId, activeBook.title, activeBook.author)
 
             // Set the last used color from user profile if available
             userModel?.lastHighlightColor?.let {
@@ -532,6 +490,8 @@ class ReaderViewModel(
                 groupBookListener = null
                 groupInfoListener?.remove()
                 groupInfoListener = null
+                annotationsListener?.remove()
+                annotationsListener = null
                 _isAdmin.value = false
                 _publication.value = null
                 _isBookReady.value = false
@@ -540,15 +500,14 @@ class ReaderViewModel(
                 _initialLocator.value = null
                 _highlights.value = emptyList()
                 _notes.value = emptyList()
+                _groupProgress.value = emptyList()
                 loadedGroupId = resolvedGroupId
 
                 // Start listening to group info if in a group
-                if (loadedGroupId != "none") {
-                    groupInfoListener = firestore.collection("groups").document(loadedGroupId!!)
-                        .addSnapshotListener { snapshot, _ ->
-                            val group = snapshot?.toObject(com.indeavour.coreader.model.firebase.GroupModel::class.java)
-                            _isAdmin.value = group?.groupMembers?.get(uid)?.admin == true
-                        }
+                if (resolvedGroupId != NO_GROUP) {
+                    groupInfoListener = groups.listenGroup(resolvedGroupId) { group ->
+                        _isAdmin.value = group?.groupMembers?.get(uid)?.admin == true
+                    }
                 }
             } else if (_publication.value != null) {
                 Log.d("ReaderViewModel", "Book ${activeBook.id} already loaded, resuming session")
@@ -559,300 +518,121 @@ class ReaderViewModel(
 
             val bookFile = File(activeBook.filePath)
             Log.d("ReaderViewModel", "Book file path: ${activeBook.filePath}, exists: ${bookFile.exists()}")
-            if (bookFile.exists()) {
-                loadedBookId = activeBook.id
-
-                // Fetch progress from Firestore
-                var progressFromFirestore: String? = null
-                if (uid != null) {
-                    try {
-                        val bookKey = "${activeBook.title}_${activeBook.author}"
-                        
-                        // First check personal progression (now always updated)
-                        progressFromFirestore = userModel?.books?.get(bookKey)?.progress
-                        
-                        // Fallback to group progression if personal is missing and we are in a group
-                        if (progressFromFirestore.isNullOrBlank() && loadedGroupId != "none") {
-                            val groupBookDoc = firestore.collection("groupBooks").document(loadedGroupId!!).get().await()
-                            val groupBook = groupBookDoc.toObject(GroupBook::class.java)
-                            val userBookInGroup = groupBook?.getBookModel(uid, bookKey)
-                            if (userBookInGroup?.title == activeBook.title && userBookInGroup.author == activeBook.author) {
-                                progressFromFirestore = userBookInGroup.progress
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e("ReaderViewModel", "Failed to fetch Firestore progress", e)
-                    }
-                }
-
-                val progressionToUse = if (!progressFromFirestore.isNullOrBlank()) {
-                    progressFromFirestore
-                } else if (!activeBook.progression.isNullOrBlank()) {
-                    activeBook.progression
-                } else {
-                    null
-                }
-
-                val initialProgress = progressionToUse?.let {
-                    try {
-                        val json = org.json.JSONObject(it)
-                        val locations = json.optJSONObject("locations")
-                        locations?.optDouble("totalProgression", 0.0)?.toFloat() ?: 0f
-                    } catch (e: Exception) { 0f }
-                } ?: 0f
-
-                startReadingSession(initialProgress)
-                openBook(bookFile, progression = progressionToUse)
-
-                // Set up real-time listener for group progress and annotations.
-                // Use resolvedGroupId (not currentActiveGroupId): a book that isn't uploaded to the
-                // active group is read in personal mode and must load personal annotations below.
-                if (resolvedGroupId != "none") {
-                    val bookKey = "${activeBook.title}_${activeBook.author}"
-                    groupBookListener = firestore.collection("groupBooks").document(resolvedGroupId)
-                        .addSnapshotListener { snapshot, e ->
-                            if (e != null) {
-                                Log.e("ReaderViewModel", "GroupBook listener failed", e)
-                                return@addSnapshotListener
-                            }
-
-                            if (snapshot != null && snapshot.exists()) {
-                                Log.d("ReaderViewModel", "GroupBook snapshot received for ${snapshot.id}")
-                                val groupBook = snapshot.toObject(GroupBook::class.java)
-                                val highlightsList = mutableListOf<HighlightData>()
-                                val notesList = mutableListOf<NoteData>()
-                                val groupProgressList = mutableListOf<MemberProgress>()
-                                val userIdsToFetch = mutableSetOf<String>()
-
-                                groupBook?.bookProgression?.forEach { (memberId, userBooks) ->
-                                    val bookModel = BookModel.fromAny(userBooks[bookKey])
-                                    if (bookModel != null && bookModel.title == activeBook.title && bookModel.author == activeBook.author) {
-                                        userIdsToFetch.add(memberId)
-
-                                        // Load progress
-                                        if (bookModel.progress.isNotBlank()) {
-                                            try {
-                                                val loc = Locator.fromJSON(org.json.JSONObject(bookModel.progress))
-                                                if (loc != null) {
-                                                    Log.d("ReaderViewModel", "Found progress for $memberId: ${loc.href}")
-                                                    groupProgressList.add(MemberProgress(memberId, _usernames.value[memberId] ?: "", loc))
-                                                    
-                                                    // Update remote progression if it's the current user
-                                                    if (memberId == uid) {
-                                                        _remoteProgression.value = loc
-                                                    }
-                                                }
-                                            } catch (e: Exception) {}
-                                        }
-
-                                        bookModel.highlights.forEach { entryJson ->
-                                            try {
-                                                val obj = org.json.JSONObject(entryJson)
-                                                val locJson = obj.optJSONObject("locator")
-                                                val hUserId = obj.optString("userId", memberId)
-                                                val hColor = obj.optInt("color", 0x66FFFF00)
-                                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
-                                                if (locator != null) {
-                                                    highlightsList.add(HighlightData(locator, hUserId, hColor))
-                                                    userIdsToFetch.add(hUserId)
-                                                }
-                                            } catch (ex: Exception) {}
-                                        }
-                                        bookModel.notes.forEach { noteModel ->
-                                            try {
-                                                val obj = org.json.JSONObject(noteModel.note)
-                                                val locJson = obj.optJSONObject("locator")
-                                                val hUserId = obj.optString("userId", memberId)
-                                                val content = obj.optString("content", "")
-                                                val hColor = obj.optInt("color", 0x66FFFF00)
-                                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
-                                                if (locator != null) {
-                                                    notesList.add(NoteData(locator, hUserId, content, hColor, noteModel.replies))
-                                                    userIdsToFetch.add(hUserId)
-                                                    noteModel.replies.forEach { userIdsToFetch.add(it.userId) }
-                                                }
-                                            } catch (ex: Exception) {}
-                                        }
-                                    }
-                                }
-
-                                // Update state
-                                _highlights.value = highlightsList
-                                _notes.value = notesList
-                                
-                                // Fetch missing usernames
-                                viewModelScope.launch {
-                                    val nameMap = _usernames.value.toMutableMap()
-                                    var changed = false
-                                    userIdsToFetch.forEach { id ->
-                                        if (!nameMap.containsKey(id)) {
-                                            try {
-                                                val userSnapshot = firestore.collection("users").document(id).get().await()
-                                                nameMap[id] = userSnapshot.getString("username") ?: "Unknown"
-                                                changed = true
-                                            } catch (ex: Exception) {
-                                                nameMap[id] = "Unknown"
-                                                changed = true
-                                            }
-                                        }
-                                    }
-                                    if (changed) {
-                                        _usernames.value = nameMap
-                                    }
-                                    _groupProgress.value = groupProgressList.map { 
-                                        it.copy(username = nameMap[it.userId] ?: "Unknown")
-                                    }
-                                }
-                            }
-                        }
-                } else if (uid != null) {
-                    // Load personal annotations (one-time load is fine for personal)
-                    viewModelScope.launch {
-                        try {
-                            val bookKey = "${activeBook.title}_${activeBook.author}"
-                            val highlightsList = mutableListOf<HighlightData>()
-                            val notesList = mutableListOf<NoteData>()
-                            
-                            val userBook = userModel?.books?.get(bookKey)
-                            val userIdsToFetchLocal = mutableSetOf<String>()
-                            userBook?.highlights?.forEach { entryJson ->
-                                try {
-                                    val obj = org.json.JSONObject(entryJson)
-                                    val locJson = obj.optJSONObject("locator")
-                                    val hUserId = obj.optString("userId", uid)
-                                    val hColor = obj.optInt("color", 0x66FFFF00)
-                                    val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
-                                    if (locator != null) {
-                                        highlightsList.add(HighlightData(locator, hUserId, hColor))
-                                    }
-                                } catch (e: Exception) {}
-                            }
-                            userBook?.notes?.forEach { noteModel ->
-                                try {
-                                    val obj = org.json.JSONObject(noteModel.note)
-                                    val locJson = obj.optJSONObject("locator")
-                                    val hUserId = obj.optString("userId", uid)
-                                    val content = obj.optString("content", "")
-                                    val hColor = obj.optInt("color", 0x66FFFF00)
-                                    val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
-                                    if (locator != null) {
-                                        notesList.add(NoteData(locator, hUserId, content, hColor, noteModel.replies))
-                                        noteModel.replies.forEach { userIdsToFetchLocal.add(it.userId) }
-                                    }
-                                } catch (e: Exception) {}
-                            }
-
-                            val nameMap = _usernames.value.toMutableMap()
-                            var changed = false
-                            userIdsToFetchLocal.forEach { id ->
-                                if (!nameMap.containsKey(id)) {
-                                    try {
-                                        val userSnapshot = firestore.collection("users").document(id).get().await()
-                                        nameMap[id] = userSnapshot.getString("username") ?: "Unknown"
-                                        changed = true
-                                    } catch (ex: Exception) {
-                                        nameMap[id] = "Unknown"
-                                        changed = true
-                                    }
-                                }
-                            }
-                            if (changed) {
-                                _usernames.value = nameMap
-                            }
-
-                            if (!nameMap.containsKey(uid)) {
-                                nameMap[uid] = userModel?.username ?: "Unknown"
-                                _usernames.value = nameMap
-                            }
-                            _highlights.value = highlightsList
-                            _notes.value = notesList
-                            _groupProgress.value = emptyList() // No group progress in personal mode
-                        } catch (e: Exception) {
-                            Log.e("ReaderViewModel", "Failed to load personal annotations", e)
-                        }
-                    }
-                }
-            } else {
+            if (!bookFile.exists()) {
                 _error.value = "Book file not found at ${activeBook.filePath}"
+                return@launch
+            }
+
+            loadedBookId = activeBook.id
+
+            val progressionToUse = storedProgression(uid, userModel, bookKey, activeBook, resolvedGroupId)
+            val initialProgress = progressionToUse?.let { progressionOf(it) } ?: 0f
+
+            startReadingSession(initialProgress)
+            openBook(bookFile, progression = progressionToUse)
+
+            if (uid != null) {
+                // Annotations come from the book's own subcollection in both modes; only the
+                // reading positions of other members are group-specific.
+                observeAnnotations(annotationScope(resolvedGroupId, uid), bookKey)
+                if (resolvedGroupId != NO_GROUP) {
+                    observeGroupProgress(resolvedGroupId, bookKey, uid)
+                } else {
+                    _groupProgress.value = emptyList()
+                }
             }
         }
+    }
+
+    /**
+     * A book that has not been uploaded to the active group is read in personal mode, so its
+     * annotations stay private rather than appearing in the group's shared set.
+     */
+    private suspend fun resolveGroupForBook(
+        activeGroupId: String,
+        title: String,
+        author: String
+    ): String {
+        if (activeGroupId == NO_GROUP) return NO_GROUP
+        return try {
+            val groupBook = groups.groupBook(activeGroupId)
+            if (groupBook == null) {
+                Log.d("ReaderViewModel", "GroupBook doc for $activeGroupId not found. Using personal mode.")
+                return NO_GROUP
+            }
+            val uploaded = groupBook.bookProgression.values.any { memberBooks ->
+                memberBooks.values.any { entry ->
+                    BookModel.fromAny(entry)?.let { it.title == title && it.author == author } ?: false
+                }
+            }
+            if (uploaded) {
+                activeGroupId
+            } else {
+                Log.d("ReaderViewModel", "Book $title not uploaded to group $activeGroupId. Using personal mode.")
+                NO_GROUP
+            }
+        } catch (e: Exception) {
+            Log.e("ReaderViewModel", "Error checking book in group", e)
+            NO_GROUP
+        }
+    }
+
+    /** Personal progress first, then this member's group copy, then whatever Room has. */
+    private suspend fun storedProgression(
+        uid: String?,
+        userModel: UserModel?,
+        bookKey: String,
+        activeBook: com.indeavour.coreader.model.room.RoomBook,
+        resolvedGroupId: String
+    ): String? {
+        var stored: String? = userModel?.books?.get(bookKey)?.progress
+
+        if (stored.isNullOrBlank() && uid != null && resolvedGroupId != NO_GROUP) {
+            try {
+                val inGroup = groups.groupBook(resolvedGroupId)?.getBookModel(uid, bookKey)
+                if (inGroup?.title == activeBook.title && inGroup.author == activeBook.author) {
+                    stored = inGroup.progress
+                }
+            } catch (e: Exception) {
+                Log.e("ReaderViewModel", "Failed to fetch group progress", e)
+            }
+        }
+
+        return stored?.takeIf { it.isNotBlank() }
+            ?: activeBook.progression?.takeIf { it.isNotBlank() }
+    }
+
+    private fun progressionOf(locatorJson: String): Float = try {
+        val json = org.json.JSONObject(locatorJson)
+        json.optJSONObject("locations")?.optDouble("totalProgression", 0.0)?.toFloat() ?: 0f
+    } catch (e: Exception) {
+        0f
     }
 
     fun addHighlight(locator: Locator) {
         val pub = _publication.value ?: return
         val uid = auth.currentUser?.uid ?: return
-        val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
+        val scope = annotationScope(loadedGroupId, uid)
+        val bookKey = bookKeyOf(pub)
+        val locatorJson = locator.toJSON().toString()
+        val position = LocatorFields.of(locatorJson)
 
-        CoroutineScope(Dispatchers.IO).launch {
+        val annotation = AnnotationModel(
+            id = annotations.newId(),
+            ownerUid = uid,
+            type = AnnotationModel.TYPE_HIGHLIGHT,
+            locator = locatorJson,
+            href = position.href,
+            totalProgression = position.totalProgression,
+            color = _selectedHighlightColor.value,
+            createdAt = System.currentTimeMillis()
+        )
+
+        saveScope.launch {
             try {
-                val userRef = firestore.collection("users").document(uid)
-                val userDoc = userRef.get().await()
-                if (userDoc.exists()) {
-                    val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
-                    val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
-
-                    val highlightColor = _selectedHighlightColor.value
-                    val highlightEntry = org.json.JSONObject().apply {
-                        put("locator", locator.toJSON())
-                        put("userId", uid)
-                        put("color", highlightColor)
-                    }.toString()
-
-                    // Optimistically update local state
-                    val nameMap = _usernames.value.toMutableMap()
-                    if (!nameMap.containsKey(uid)) {
-                        nameMap[uid] = userModel.username
-                        _usernames.value = nameMap
-                    }
-                    _highlights.value = _highlights.value + HighlightData(locator, uid, highlightColor)
-
-                    if (effectiveGroupId != null) {
-                        val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
-                        val groupBookDoc = groupBookRef.get().await()
-                        
-                        val groupProgression = if (groupBookDoc.exists()) {
-                            val gb = groupBookDoc.toObject(GroupBook::class.java)
-                            gb?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: mutableMapOf()
-                        } else {
-                            mutableMapOf()
-                        }
-
-                        val userBooks = groupProgression[uid] ?: mutableMapOf()
-                        val existingInGroup = BookModel.fromAny(userBooks[bookKey])
-                        val userBook = if (existingInGroup != null && existingInGroup.title == pub.metadata.title && existingInGroup.author == (pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author")) {
-                            existingInGroup
-                        } else {
-                            BookModel(
-                                title = pub.metadata.title ?: "",
-                                author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author",
-                                addedTimestamp = System.currentTimeMillis()
-                            )
-                        }
-
-                        val currentHighlights = userBook.highlights.toMutableList()
-                        currentHighlights.add(highlightEntry)
-                        userBooks[bookKey] = userBook.copy(highlights = currentHighlights)
-                        groupProgression[uid] = userBooks
-                        
-                        if (groupBookDoc.exists()) {
-                            groupBookRef.update("bookProgression", groupProgression).await()
-                        } else {
-                            groupBookRef.set(GroupBook(groupCode = effectiveGroupId, bookProgression = groupProgression)).await()
-                        }
-                    } else {
-                        val books = userModel.books.toMutableMap()
-                        val userBook = books[bookKey] ?: BookModel(
-                            title = pub.metadata.title ?: "",
-                            author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
-                        )
-                        val currentHighlights = userBook.highlights.toMutableList()
-                        currentHighlights.add(highlightEntry)
-                        books[bookKey] = userBook.copy(highlights = currentHighlights)
-                        userRef.update("books", books).await()
-                    }
-                }
+                annotations.add(scope, bookKey, annotation)
             } catch (e: Exception) {
-                Log.e("ReaderViewModel", "Failed to add highlight to Firestore", e)
+                Log.e("ReaderViewModel", "Failed to add highlight", e)
             }
         }
     }
@@ -860,212 +640,57 @@ class ReaderViewModel(
     fun addNote(locator: Locator, content: String) {
         val pub = _publication.value ?: return
         val uid = auth.currentUser?.uid ?: return
-        val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
+        val scope = annotationScope(loadedGroupId, uid)
+        val bookKey = bookKeyOf(pub)
+        val locatorJson = locator.toJSON().toString()
+        val position = LocatorFields.of(locatorJson)
 
-        CoroutineScope(Dispatchers.IO).launch {
+        val annotation = AnnotationModel(
+            id = annotations.newId(),
+            ownerUid = uid,
+            type = AnnotationModel.TYPE_NOTE,
+            locator = locatorJson,
+            href = position.href,
+            totalProgression = position.totalProgression,
+            color = _selectedHighlightColor.value,
+            content = content,
+            createdAt = System.currentTimeMillis()
+        )
+
+        saveScope.launch {
             try {
-                val userRef = firestore.collection("users").document(uid)
-                val userDoc = userRef.get().await()
-                if (userDoc.exists()) {
-                    val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
-                    val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
-
-                    val noteColor = _selectedHighlightColor.value
-                    val noteEntry = org.json.JSONObject().apply {
-                        put("locator", locator.toJSON())
-                        put("userId", uid)
-                        put("content", content)
-                        put("color", noteColor)
-                    }.toString()
-
-                    // Optimistically update local state
-                    val nameMap = _usernames.value.toMutableMap()
-                    if (!nameMap.containsKey(uid)) {
-                        nameMap[uid] = userModel.username
-                        _usernames.value = nameMap
-                    }
-                    _notes.value = _notes.value + NoteData(locator, uid, content, noteColor)
-
-                    if (effectiveGroupId != null) {
-                        val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
-                        val groupBookDoc = groupBookRef.get().await()
-                        
-                        val groupProgression = if (groupBookDoc.exists()) {
-                            val gb = groupBookDoc.toObject(GroupBook::class.java)
-                            gb?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: mutableMapOf()
-                        } else {
-                            mutableMapOf()
-                        }
-
-                        val userBooks = groupProgression[uid] ?: mutableMapOf()
-                        val existingInGroup = BookModel.fromAny(userBooks[bookKey])
-                        val userBook = if (existingInGroup != null && existingInGroup.title == pub.metadata.title && existingInGroup.author == (pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author")) {
-                            existingInGroup
-                        } else {
-                            BookModel(
-                                title = pub.metadata.title ?: "",
-                                author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author",
-                                addedTimestamp = System.currentTimeMillis()
-                            )
-                        }
-
-                        val currentNotes = userBook.notes.toMutableList()
-                        currentNotes.add(NoteModel(note = noteEntry))
-                        userBooks[bookKey] = userBook.copy(notes = currentNotes)
-                        groupProgression[uid] = userBooks
-                        
-                        if (groupBookDoc.exists()) {
-                            groupBookRef.update("bookProgression", groupProgression).await()
-                        } else {
-                            groupBookRef.set(GroupBook(groupCode = effectiveGroupId, bookProgression = groupProgression)).await()
-                        }
-                    } else {
-                        val books = userModel.books.toMutableMap()
-                        val userBook = books[bookKey] ?: BookModel(
-                            title = pub.metadata.title ?: "",
-                            author = pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author",
-                            addedTimestamp = System.currentTimeMillis()
-                        )
-                        val currentNotes = userBook.notes.toMutableList()
-                        currentNotes.add(NoteModel(note = noteEntry))
-                        books[bookKey] = userBook.copy(notes = currentNotes)
-                        userRef.update("books", books).await()
-                    }
-                }
+                annotations.add(scope, bookKey, annotation)
             } catch (e: Exception) {
-                Log.e("ReaderViewModel", "Failed to add note to Firestore", e)
+                Log.e("ReaderViewModel", "Failed to add note", e)
             }
         }
     }
 
     fun deleteHighlight(highlight: HighlightData) {
-        val pub = _publication.value ?: return
-        val uid = auth.currentUser?.uid ?: return
-        val isAdminUser = _isAdmin.value
-        if (highlight.userId != uid && !isAdminUser) return
-        val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
-
-        viewModelScope.launch {
-            try {
-                // Update local state immediately on Main thread
-                _highlights.value = _highlights.value.filter { it != highlight }
-
-                val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
-                if (effectiveGroupId != null) {
-                    val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
-                    val groupBookDoc = groupBookRef.get().await()
-                    if (groupBookDoc.exists()) {
-                        val groupBook = groupBookDoc.toObject(GroupBook::class.java)
-                        val groupProgression = groupBook?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: return@launch
-                        
-                        // Use the highlight's userId to find the correct entry, not the current user's uid if admin
-                        val targetUid = highlight.userId
-                        val userBooks = groupProgression[targetUid] ?: return@launch
-                        val bookModel = BookModel.fromAny(userBooks[bookKey]) ?: return@launch
-                        
-                        val updatedHighlights = bookModel.highlights.filterNot { entryJson ->
-                            try {
-                                val obj = org.json.JSONObject(entryJson)
-                                val locJson = obj.optJSONObject("locator")
-                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
-                                locator == highlight.locator
-                            } catch (e: Exception) { false }
-                        }
-                        
-                        userBooks[bookKey] = bookModel.copy(highlights = updatedHighlights)
-                        groupProgression[targetUid] = userBooks
-                        groupBookRef.update("bookProgression", groupProgression).await()
-                    }
-                } else {
-                    // Personal book - only the owner can delete, which is checked at the start
-                    val userRef = firestore.collection("users").document(uid)
-                    val userDoc = userRef.get().await()
-                    if (userDoc.exists()) {
-                        val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
-                        val books = userModel.books.toMutableMap()
-                        val bookModel = books[bookKey] ?: return@launch
-                        
-                        val updatedHighlights = bookModel.highlights.filterNot { entryJson ->
-                            try {
-                                val obj = org.json.JSONObject(entryJson)
-                                val locJson = obj.optJSONObject("locator")
-                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
-                                locator == highlight.locator
-                            } catch (e: Exception) { false }
-                        }
-                        
-                        books[bookKey] = bookModel.copy(highlights = updatedHighlights)
-                        userRef.update("books", books).await()
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e("ReaderViewModel", "Failed to delete highlight from Firestore", e)
-            }
-        }
+        deleteAnnotation(highlight.userId, highlight.id, "highlight")
     }
 
     fun deleteNote(note: NoteData) {
+        deleteAnnotation(note.userId, note.id, "note")
+    }
+
+    /**
+     * Deleting by document id removes exactly the annotation that was tapped. The previous
+     * approach matched on locator and text, so two identical notes in the same place were
+     * indistinguishable and both disappeared.
+     */
+    private fun deleteAnnotation(ownerUid: String, annotationId: String, kind: String) {
         val pub = _publication.value ?: return
         val uid = auth.currentUser?.uid ?: return
-        val isAdminUser = _isAdmin.value
-        if (note.userId != uid && !isAdminUser) return
-        val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
+        if (ownerUid != uid && !_isAdmin.value) return
+        val scope = annotationScope(loadedGroupId, uid)
+        val bookKey = bookKeyOf(pub)
 
         viewModelScope.launch {
             try {
-                // Update local state immediately on Main thread
-                _notes.value = _notes.value.filter { it != note }
-
-                val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
-                if (effectiveGroupId != null) {
-                    val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
-                    val groupBookDoc = groupBookRef.get().await()
-                    if (groupBookDoc.exists()) {
-                        val groupBook = groupBookDoc.toObject(GroupBook::class.java)
-                        val groupProgression = groupBook?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: return@launch
-                        
-                        // Use the note's userId to find the correct entry
-                        val targetUid = note.userId
-                        val userBooks = groupProgression[targetUid] ?: return@launch
-                        val bookModel = BookModel.fromAny(userBooks[bookKey]) ?: return@launch
-                        
-                        val updatedNotes = bookModel.notes.filterNot { noteModel ->
-                            try {
-                                val obj = org.json.JSONObject(noteModel.note)
-                                val locJson = obj.optJSONObject("locator")
-                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
-                                locator == note.locator && obj.optString("content") == note.content
-                            } catch (e: Exception) { false }
-                        }
-                        
-                        userBooks[bookKey] = bookModel.copy(notes = updatedNotes)
-                        groupProgression[targetUid] = userBooks
-                        groupBookRef.update("bookProgression", groupProgression).await()
-                    }
-                } else {
-                    // Personal book - owner check at start
-                    val userRef = firestore.collection("users").document(uid)
-                    val userDoc = userRef.get().await()
-                    if (userDoc.exists()) {
-                        val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
-                        val books = userModel.books.toMutableMap()
-                        val bookModel = books[bookKey] ?: return@launch
-                        
-                        val updatedNotes = bookModel.notes.filterNot { noteModel ->
-                            try {
-                                val obj = org.json.JSONObject(noteModel.note)
-                                val locJson = obj.optJSONObject("locator")
-                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
-                                locator == note.locator && obj.optString("content") == note.content
-                            } catch (e: Exception) { false }
-                        }
-                        
-                        books[bookKey] = bookModel.copy(notes = updatedNotes)
-                        userRef.update("books", books).await()
-                    }
-                }
+                annotations.delete(scope, bookKey, annotationId)
             } catch (e: Exception) {
-                Log.e("ReaderViewModel", "Failed to delete note from Firestore", e)
+                Log.e("ReaderViewModel", "Failed to delete $kind", e)
             }
         }
     }
@@ -1073,98 +698,18 @@ class ReaderViewModel(
     fun addReplyToNote(note: NoteData, replyText: String) {
         val pub = _publication.value ?: return
         val uid = auth.currentUser?.uid ?: return
-        val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
-
-        val newReply = ReplyModel(
-            userId = uid,
-            text = replyText,
-            timestamp = System.currentTimeMillis()
-        )
+        val scope = annotationScope(loadedGroupId, uid)
+        val bookKey = bookKeyOf(pub)
+        val reply = ReplyModel(userId = uid, text = replyText, timestamp = System.currentTimeMillis())
 
         viewModelScope.launch {
             try {
-                // Update local state
-                _notes.value = _notes.value.map {
-                    if (it.locator == note.locator && it.content == note.content && it.userId == note.userId) {
-                        it.copy(replies = it.replies + newReply)
-                    } else it
-                }
-                
-                // Collect any new user IDs that might need username fetching
-                val userIdsToFetch = mutableSetOf<String>()
-                userIdsToFetch.add(uid)
-
-                val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
-                if (effectiveGroupId != null) {
-                    val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
-                    val groupBookDoc = groupBookRef.get().await()
-                    if (groupBookDoc.exists()) {
-                        val groupBook = groupBookDoc.toObject(GroupBook::class.java)
-                        val groupProgression = groupBook?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: return@launch
-                        
-                        val targetUid = note.userId
-                        val userBooks = groupProgression[targetUid] ?: return@launch
-                        val bookModel = BookModel.fromAny(userBooks[bookKey]) ?: return@launch
-                        
-                        val updatedNotes = bookModel.notes.map { noteModel ->
-                            try {
-                                val obj = org.json.JSONObject(noteModel.note)
-                                val locJson = obj.optJSONObject("locator")
-                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
-                                if (locator == note.locator && obj.optString("content") == note.content) {
-                                    noteModel.copy(replies = noteModel.replies + newReply)
-                                } else noteModel
-                            } catch (e: Exception) { noteModel }
-                        }
-                        
-                        userBooks[bookKey] = bookModel.copy(notes = updatedNotes)
-                        groupProgression[targetUid] = userBooks
-                        groupBookRef.update("bookProgression", groupProgression).await()
-                    }
-                } else {
-                    val userRef = firestore.collection("users").document(uid)
-                    val userDoc = userRef.get().await()
-                    if (userDoc.exists()) {
-                        val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
-                        val books = userModel.books.toMutableMap()
-                        val bookModel = books[bookKey] ?: return@launch
-                        
-                        val updatedNotes = bookModel.notes.map { noteModel ->
-                            try {
-                                val obj = org.json.JSONObject(noteModel.note)
-                                val locJson = obj.optJSONObject("locator")
-                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
-                                if (locator == note.locator && obj.optString("content") == note.content) {
-                                    noteModel.copy(replies = noteModel.replies + newReply)
-                                } else noteModel
-                            } catch (e: Exception) { noteModel }
-                        }
-                        
-                        books[bookKey] = bookModel.copy(notes = updatedNotes)
-                        userRef.update("books", books).await()
-                    }
-                }
-                
-                // Fetch usernames for any new IDs (like the replier)
-                val nameMap = _usernames.value.toMutableMap()
-                var changed = false
-                userIdsToFetch.forEach { id ->
-                    if (!nameMap.containsKey(id)) {
-                        try {
-                            val userSnapshot = firestore.collection("users").document(id).get().await()
-                            nameMap[id] = userSnapshot.getString("username") ?: "Unknown"
-                            changed = true
-                        } catch (ex: Exception) {
-                            nameMap[id] = "Unknown"
-                            changed = true
-                        }
-                    }
-                }
-                if (changed) {
-                    _usernames.value = nameMap
-                }
+                // arrayUnion appends without rewriting the note, so two readers replying at the
+                // same time no longer overwrite each other.
+                annotations.addReply(scope, bookKey, note.id, reply)
+                resolveUsernames(listOf(uid))
             } catch (e: Exception) {
-                Log.e("ReaderViewModel", "Failed to add reply to Firestore", e)
+                Log.e("ReaderViewModel", "Failed to add reply", e)
             }
         }
     }
@@ -1172,69 +717,14 @@ class ReaderViewModel(
     fun deleteReply(note: NoteData, reply: ReplyModel) {
         val pub = _publication.value ?: return
         val uid = auth.currentUser?.uid ?: return
-        val bookKey = "${pub.metadata.title}_${pub.metadata.authors.firstOrNull()?.name ?: "Unknown Author"}"
+        val scope = annotationScope(loadedGroupId, uid)
+        val bookKey = bookKeyOf(pub)
 
         viewModelScope.launch {
             try {
-                // Update local state
-                _notes.value = _notes.value.map {
-                    if (it.locator == note.locator && it.content == note.content && it.userId == note.userId) {
-                        it.copy(replies = it.replies.filterNot { r -> r == reply })
-                    } else it
-                }
-
-                val effectiveGroupId = loadedGroupId?.takeIf { it != "none" && it.isNotBlank() }
-                if (effectiveGroupId != null) {
-                    val groupBookRef = firestore.collection("groupBooks").document(effectiveGroupId)
-                    val groupBookDoc = groupBookRef.get().await()
-                    if (groupBookDoc.exists()) {
-                        val groupBook = groupBookDoc.toObject(GroupBook::class.java)
-                        val groupProgression = groupBook?.bookProgression?.mapValues { it.value.toMutableMap() }?.toMutableMap() ?: return@launch
-                        
-                        val targetUid = note.userId
-                        val userBooks = groupProgression[targetUid] ?: return@launch
-                        val bookModel = BookModel.fromAny(userBooks[bookKey]) ?: return@launch
-                        
-                        val updatedNotes = bookModel.notes.map { noteModel ->
-                            try {
-                                val obj = org.json.JSONObject(noteModel.note)
-                                val locJson = obj.optJSONObject("locator")
-                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
-                                if (locator == note.locator && obj.optString("content") == note.content) {
-                                    noteModel.copy(replies = noteModel.replies.filterNot { r -> r.userId == reply.userId && r.text == reply.text && r.timestamp == reply.timestamp })
-                                } else noteModel
-                            } catch (e: Exception) { noteModel }
-                        }
-                        
-                        userBooks[bookKey] = bookModel.copy(notes = updatedNotes)
-                        groupProgression[targetUid] = userBooks
-                        groupBookRef.update("bookProgression", groupProgression).await()
-                    }
-                } else {
-                    val userRef = firestore.collection("users").document(uid)
-                    val userDoc = userRef.get().await()
-                    if (userDoc.exists()) {
-                        val userModel = userDoc.toObject(UserModel::class.java) ?: return@launch
-                        val books = userModel.books.toMutableMap()
-                        val bookModel = books[bookKey] ?: return@launch
-                        
-                        val updatedNotes = bookModel.notes.map { noteModel ->
-                            try {
-                                val obj = org.json.JSONObject(noteModel.note)
-                                val locJson = obj.optJSONObject("locator")
-                                val locator = if (locJson != null) Locator.fromJSON(locJson) else Locator.fromJSON(obj)
-                                if (locator == note.locator && obj.optString("content") == note.content) {
-                                    noteModel.copy(replies = noteModel.replies.filterNot { r -> r.userId == reply.userId && r.text == reply.text && r.timestamp == reply.timestamp })
-                                } else noteModel
-                            } catch (e: Exception) { noteModel }
-                        }
-                        
-                        books[bookKey] = bookModel.copy(notes = updatedNotes)
-                        userRef.update("books", books).await()
-                    }
-                }
+                annotations.removeReply(scope, bookKey, note.id, reply)
             } catch (e: Exception) {
-                Log.e("ReaderViewModel", "Failed to delete reply from Firestore", e)
+                Log.e("ReaderViewModel", "Failed to delete reply", e)
             }
         }
     }
@@ -1271,6 +761,11 @@ class ReaderViewModel(
     }
 
     companion object {
+        /** Sentinel for "not reading in a group"; also the value stored in [loadedGroupId]. */
+        private const val NO_GROUP = "none"
+        private const val UNKNOWN_AUTHOR = "Unknown Author"
+        private const val COMPLETION_THRESHOLD = 0.995f
+
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {

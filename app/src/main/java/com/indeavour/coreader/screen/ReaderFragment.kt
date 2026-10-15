@@ -1274,7 +1274,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         
         val highlightDecorations = highlights.map { data ->
             Decoration(
-                id = "highlight-${data.userId}-${data.locator.hashCode()}",
+                id = "highlight-${data.id}",
                 locator = data.locator,
                 style = Decoration.Style.Highlight(tint = data.color, isActive = false),
                 extras = mapOf("userId" to data.userId, "type" to "highlight")
@@ -1283,7 +1283,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
         val noteDecorations = notes.map { data ->
             Decoration(
-                id = "note-${data.userId}-${data.locator.hashCode()}",
+                id = "note-${data.id}",
                 locator = data.locator,
                 style = Decoration.Style.Highlight(tint = data.color, isActive = true),
                 extras = mapOf("userId" to data.userId, "type" to "note", "content" to data.content)

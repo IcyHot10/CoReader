@@ -3,21 +3,19 @@ package com.indeavour.coreader.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
-import com.indeavour.coreader.model.firebase.BookModel
 import com.indeavour.coreader.model.firebase.ReadingListBook
-import com.indeavour.coreader.model.firebase.ReadingListDocument
-import com.indeavour.coreader.model.firebase.UserModel
+import com.indeavour.coreader.repository.ReadingListRepository
+import com.indeavour.coreader.repository.UserRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import java.util.UUID
 
 class ReadingListViewModel : ViewModel() {
     private val auth = FirebaseAuth.getInstance()
-    private val firestore = FirebaseFirestore.getInstance()
+    private val readingLists = ReadingListRepository()
+    private val users = UserRepository()
 
     private val _readingList = MutableStateFlow<List<ReadingListBook>>(emptyList())
     val readingList: StateFlow<List<ReadingListBook>> = _readingList
@@ -28,20 +26,16 @@ class ReadingListViewModel : ViewModel() {
     private var readingListListener: ListenerRegistration? = null
 
     init {
-        startReadingListListener()
+        startListener()
     }
 
-    private fun startReadingListListener() {
+    private fun startListener() {
         val uid = auth.currentUser?.uid ?: return
         readingListListener?.remove()
-        readingListListener = firestore.collection("readingLists").document(uid)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) return@addSnapshotListener
-                val doc = snapshot?.toObject(ReadingListDocument::class.java)
-                val items = doc?.books?.values?.sortedBy { it.position } ?: emptyList()
-                _readingList.value = items.filter { !it.isSuggestion }
-                _suggestions.value = items.filter { it.isSuggestion && !it.isDismissed }
-            }
+        readingListListener = readingLists.listen(uid) { books ->
+            _readingList.value = books.filter { !it.isSuggestion }
+            _suggestions.value = books.filter { it.isSuggestion && !it.isDismissed }
+        }
     }
 
     override fun onCleared() {
@@ -51,31 +45,17 @@ class ReadingListViewModel : ViewModel() {
 
     fun addBook(title: String, author: String, onResult: (Boolean) -> Unit) {
         val uid = auth.currentUser?.uid ?: return
-        val bookId = UUID.randomUUID().toString()
-        val nextPosition = _readingList.value.maxOfOrNull { it.position }?.plus(1) ?: 0
         val book = ReadingListBook(
-            id = bookId,
+            id = UUID.randomUUID().toString(),
             title = title,
             author = author,
             addedTimestamp = System.currentTimeMillis(),
-            position = nextPosition,
+            position = nextPosition(),
             isSuggestion = false
         )
         viewModelScope.launch {
             try {
-                val docRef = firestore.collection("readingLists").document(uid)
-                try {
-                    docRef.update("books.$bookId", book).await()
-                } catch (e: Exception) {
-                    // If update fails, document might not exist, try to set it
-                    firestore.collection("readingLists").document(uid).set(
-                        mapOf(
-                            "userId" to uid,
-                            "books" to mapOf(bookId to book)
-                        ),
-                        com.google.firebase.firestore.SetOptions.merge()
-                    ).await()
-                }
+                readingLists.put(uid, book)
                 onResult(true)
             } catch (e: Exception) {
                 onResult(false)
@@ -85,38 +65,33 @@ class ReadingListViewModel : ViewModel() {
 
     fun removeBook(bookId: String) {
         val uid = auth.currentUser?.uid ?: return
-        if (bookId.isBlank()) return
         viewModelScope.launch {
-            try {
-                firestore.collection("readingLists").document(uid)
-                    .update("books.$bookId", com.google.firebase.firestore.FieldValue.delete()).await()
-            } catch (_: Exception) {}
+            runCatching { readingLists.remove(uid, bookId) }
         }
     }
 
     fun dismissSuggestion(bookId: String) {
         val uid = auth.currentUser?.uid ?: return
-        if (bookId.isBlank()) return
         viewModelScope.launch {
-            try {
-                firestore.collection("readingLists").document(uid)
-                    .update("books.$bookId.isDismissed", true).await()
-            } catch (_: Exception) {}
+            runCatching { readingLists.updateFields(uid, bookId, mapOf("isDismissed" to true)) }
         }
     }
 
     fun convertSuggestionToToRead(bookId: String) {
         val uid = auth.currentUser?.uid ?: return
-        if (bookId.isBlank()) return
-        val nextPosition = _readingList.value.maxOfOrNull { it.position }?.plus(1) ?: 0
+        val position = nextPosition()
         viewModelScope.launch {
-            try {
-                firestore.collection("readingLists").document(uid).update(
-                    "books.$bookId.isSuggestion", false,
-                    "books.$bookId.addedTimestamp", System.currentTimeMillis(),
-                    "books.$bookId.position", nextPosition
-                ).await()
-            } catch (_: Exception) {}
+            runCatching {
+                readingLists.updateFields(
+                    uid,
+                    bookId,
+                    mapOf(
+                        "isSuggestion" to false,
+                        "addedTimestamp" to System.currentTimeMillis(),
+                        "position" to position
+                    )
+                )
+            }
         }
     }
 
@@ -127,18 +102,15 @@ class ReadingListViewModel : ViewModel() {
         if (currentIndex == -1) return
 
         val targetIndex = if (moveUp) currentIndex - 1 else currentIndex + 1
-        if (targetIndex < 0 || targetIndex >= list.size) return
+        if (targetIndex !in list.indices) return
 
-        val currentBook = list[currentIndex]
-        val targetBook = list[targetIndex]
+        val current = list[currentIndex]
+        val target = list[targetIndex]
 
         viewModelScope.launch {
-            try {
-                firestore.collection("readingLists").document(uid).update(
-                    "books.${currentBook.id}.position", targetBook.position,
-                    "books.${targetBook.id}.position", currentBook.position
-                ).await()
-            } catch (_: Exception) {}
+            runCatching {
+                readingLists.swapPositions(uid, current.id, current.position, target.id, target.position)
+            }
         }
     }
 
@@ -146,47 +118,31 @@ class ReadingListViewModel : ViewModel() {
         val uid = auth.currentUser?.uid ?: return
         viewModelScope.launch {
             try {
-                // Fetch user's library to get preferences
-                val userDoc = firestore.collection("users").document(uid).get().await()
-                val user = userDoc.toObject(UserModel::class.java)
-                val libraryBooks = user?.books?.values?.filter { !it.isDeleted } ?: emptyList()
-                
+                val libraryBooks = users.user(uid)?.books?.values?.filter { !it.isDeleted }
+                    ?: emptyList()
                 if (libraryBooks.isEmpty()) return@launch
 
-                // Basic Mock Logic for Suggestions:
-                // In a real app, this would call a Gemini API with the context of libraryBooks.
-                // For now, we simulate a "similar" book suggestion based on a random author in the library.
+                // Basic mock logic for suggestions: a real implementation would send the library
+                // as context to a model. For now a "similar" book is seeded from a random author.
                 val seedBook = libraryBooks.random()
-                val bookId = UUID.randomUUID().toString()
-                val nextPosition = _readingList.value.maxOfOrNull { it.position }?.plus(1) ?: 0
                 val suggestion = ReadingListBook(
-                    id = bookId,
-                    title = "The Next ${seedBook.title} Story", // Mock title
-                    author = seedBook.author, // Same author as suggestion
+                    id = UUID.randomUUID().toString(),
+                    title = "The Next ${seedBook.title} Story",
+                    author = seedBook.author,
                     addedTimestamp = System.currentTimeMillis(),
-                    position = nextPosition,
+                    position = nextPosition(),
                     isSuggestion = true
                 )
 
-                // Only add if not already suggested/present
-                val exists = _readingList.value.any { it.title == suggestion.title } || 
-                             _suggestions.value.any { it.title == suggestion.title }
-                
-                if (!exists) {
-                    val docRef = firestore.collection("readingLists").document(uid)
-                    try {
-                        docRef.update("books.$bookId", suggestion).await()
-                    } catch (e: Exception) {
-                        docRef.set(
-                            mapOf(
-                                "userId" to uid,
-                                "books" to mapOf(bookId to suggestion)
-                            ),
-                            com.google.firebase.firestore.SetOptions.merge()
-                        ).await()
-                    }
-                }
-            } catch (_: Exception) {}
+                val alreadyPresent = (_readingList.value + _suggestions.value)
+                    .any { it.title == suggestion.title }
+                if (!alreadyPresent) readingLists.put(uid, suggestion)
+            } catch (e: Exception) {
+                // Suggestions are optional; a failure leaves the list unchanged.
+            }
         }
     }
+
+    private fun nextPosition(): Int =
+        _readingList.value.maxOfOrNull { it.position }?.plus(1) ?: 0
 }

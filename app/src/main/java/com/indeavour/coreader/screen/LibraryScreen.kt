@@ -217,7 +217,7 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                 modifier = Modifier.width(325.dp),
                 drawerContainerColor = MaterialTheme.colorScheme.primaryContainer
             ) {
-                SideMenuContent(user, userViewModel, routeToLogin, routeToGroup, routeToProgress, routeToReadingInsights)
+                SideMenuContent(userViewModel, routeToLogin, routeToGroup, routeToProgress, routeToReadingInsights)
             }
         }
     ) {
@@ -660,8 +660,9 @@ fun BookCard(
 }
 
 @Composable
-fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit, routeToReadingInsights: () -> Unit){
+fun SideMenuContent(userViewModel: UserViewModel, routeToLogin: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit, routeToReadingInsights: () -> Unit){
     val auth = FirebaseAuth.getInstance()
+    val username by userViewModel.username.collectAsState()
     val context = LocalContext.current
     var showEditDialog by remember { mutableStateOf(false) }
     var newUsername by remember { mutableStateOf("") }
@@ -724,7 +725,7 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
                     }
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        user?.username ?: "Loading...",
+                        username ?: "Loading...",
                         fontSize = 18.sp,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
@@ -732,7 +733,7 @@ fun SideMenuContent(user: UserModel?, userViewModel: UserViewModel, routeToLogin
                     )
                 }
                 IconButton(onClick = { 
-                    newUsername = user?.username ?: ""
+                    newUsername = username ?: ""
                     showEditDialog = true 
                 }) {
                     Icon(
