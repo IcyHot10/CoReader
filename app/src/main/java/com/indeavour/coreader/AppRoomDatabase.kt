@@ -13,7 +13,7 @@ import com.indeavour.coreader.model.room.ReadingActivity
 import com.indeavour.coreader.model.room.RoomBook
 import com.indeavour.coreader.model.room.UserPreferences
 
-@Database(entities = [RoomBook::class, UserPreferences::class, ReadingActivity::class], version = 10, exportSchema = false)
+@Database(entities = [RoomBook::class, UserPreferences::class, ReadingActivity::class], version = 11, exportSchema = false)
 abstract class AppRoomDatabase: RoomDatabase() {
     abstract fun bookDao(): RoomBookDao
     abstract fun userPreferencesDao(): UserPreferencesDao
@@ -60,11 +60,17 @@ abstract class AppRoomDatabase: RoomDatabase() {
             }
         }
 
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `book` ADD COLUMN `progression_updated_timestamp` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getDatabase(context: Context): AppRoomDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(context.applicationContext,
                     AppRoomDatabase::class.java, "library_db")
-                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build().also {INSTANCE = it}
             }

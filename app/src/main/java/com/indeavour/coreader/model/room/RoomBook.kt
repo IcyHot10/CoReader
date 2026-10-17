@@ -1,6 +1,5 @@
 package com.indeavour.coreader.model.room
 
-import android.graphics.Bitmap
 import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
@@ -15,6 +14,7 @@ data class RoomBook(
     @ColumnInfo(name = "is_favourite") val isFavourite: Boolean,
     @ColumnInfo(name = "uri") val uri: String,
     @ColumnInfo(name = "progression") val progression: String? = null,
+    @ColumnInfo(name = "progression_updated_timestamp") val progressionUpdatedTimestamp: Long = 0,
     @ColumnInfo(name = "is_active") val isActive: Boolean = false,
     @ColumnInfo(name = "is_deleted") val isDeleted: Boolean = false,
     @ColumnInfo(name = "added_timestamp") val addedTimestamp: Long = 0,

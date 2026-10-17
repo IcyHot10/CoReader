@@ -78,6 +78,7 @@ class UserViewModel : ViewModel() {
                                 "title" to book.title,
                                 "author" to book.author,
                                 "progress" to book.progress,
+                                "progressionUpdatedTimestamp" to book.progressionUpdatedTimestamp,
                                 "isDeleted" to false,
                                 "addedTimestamp" to book.addedTimestamp,
                                 "completedTimestamp" to book.completedTimestamp

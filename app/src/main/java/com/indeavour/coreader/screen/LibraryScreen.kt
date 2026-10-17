@@ -605,6 +605,7 @@ fun BookCard(
                             title = book.title,
                             author = book.author,
                             progress = book.progression ?: "0",
+                            progressionUpdatedTimestamp = book.progressionUpdatedTimestamp,
                             addedTimestamp = book.addedTimestamp,
                             completedTimestamp = book.completedTimestamp
                         )
@@ -871,9 +872,11 @@ fun MoreMenu(
 
                             if (existingBook != null) {
                                 if (existingBook.isDeleted) {
+                                    val now = System.currentTimeMillis()
+                                    val progressTimestamp = firebaseBook?.progressionUpdatedTimestamp ?: now
                                     database.bookDao().restoreBook(existingBook.id, destFile.absolutePath, uri.toString())
-                                    database.bookDao().updateProgressionByTitleAndAuthor(title, author, progress)
-                                    userViewModel.addBook(BookModel(title, author, progress), { success, message ->
+                                    database.bookDao().updateProgressionByTitleAndAuthor(title, author, progress, progressTimestamp)
+                                    userViewModel.addBook(BookModel(title, author, progress, progressionUpdatedTimestamp = progressTimestamp), { success, message ->
                                         CoroutineScope(Dispatchers.Main).launch {
                                             AppUtils.showToast(context, message)
                                         }
@@ -885,6 +888,7 @@ fun MoreMenu(
                                 }
                             } else {
                                 val now = System.currentTimeMillis()
+                                val progressTimestamp = firebaseBook?.progressionUpdatedTimestamp ?: now
                                 database.bookDao().insert(RoomBook(
                                     title = title,
                                     author = author,
@@ -893,9 +897,10 @@ fun MoreMenu(
                                     isFavourite = false,
                                     uri = uri.toString(),
                                     progression = progress,
+                                    progressionUpdatedTimestamp = progressTimestamp,
                                     addedTimestamp = now
                                 ))
-                                userViewModel.addBook(BookModel(title, author, progress, addedTimestamp = now), { success, message ->
+                                userViewModel.addBook(BookModel(title, author, progress, progressionUpdatedTimestamp = progressTimestamp, addedTimestamp = now), { success, message ->
                                     CoroutineScope(Dispatchers.Main).launch {
                                         AppUtils.showToast(context, message)
                                     }

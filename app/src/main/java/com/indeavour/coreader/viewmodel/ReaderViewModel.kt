@@ -378,7 +378,8 @@ class ReaderViewModel(
         // Save progress to Room database on every page turn
         viewModelScope.launch {
             val database = AppRoomDatabase.getDatabase(getApplication())
-            database.bookDao().updateActiveBookProgression(locator.toJSON().toString())
+            val now = System.currentTimeMillis()
+            database.bookDao().updateActiveBookProgression(locator.toJSON().toString(), now)
         }
     }
 
@@ -410,6 +411,7 @@ class ReaderViewModel(
                     "title" to (pub.metadata.title ?: ""),
                     "author" to authorName,
                     "progress" to progressionJson,
+                    "progressionUpdatedTimestamp" to now,
                     "addedTimestamp" to (existing?.addedTimestamp ?: now)
                 )
                 if (completedTimestamp > 0) fields["completedTimestamp"] = completedTimestamp
@@ -577,7 +579,10 @@ class ReaderViewModel(
         }
     }
 
-    /** Personal progress first, then this member's group copy, then whatever Room has. */
+    /**
+     * Compares local Room progression timestamp vs remote Firebase progression timestamp
+     * and returns the progression from whichever is newer.
+     */
     private suspend fun storedProgression(
         uid: String?,
         userModel: UserModel?,
@@ -585,21 +590,45 @@ class ReaderViewModel(
         activeBook: com.indeavour.coreader.model.room.RoomBook,
         resolvedGroupId: String
     ): String? {
-        var stored: String? = userModel?.books?.get(bookKey)?.progress
-
-        if (stored.isNullOrBlank() && uid != null && resolvedGroupId != NO_GROUP) {
-            try {
-                val inGroup = groups.groupBook(resolvedGroupId)?.getBookModel(uid, bookKey)
-                if (inGroup?.title == activeBook.title && inGroup.author == activeBook.author) {
-                    stored = inGroup.progress
+        val remoteBook: BookModel? = userModel?.books?.get(bookKey)
+            ?: if (uid != null && resolvedGroupId != NO_GROUP) {
+                try {
+                    groups.groupBook(resolvedGroupId)?.getBookModel(uid, bookKey)
+                } catch (e: Exception) {
+                    Log.e("ReaderViewModel", "Failed to fetch group progress", e)
+                    null
                 }
+            } else null
+
+        val remoteProgress = remoteBook?.progress?.takeIf { it.isNotBlank() }
+        val remoteTimestamp = remoteBook?.progressionUpdatedTimestamp ?: 0L
+
+        val localProgress = activeBook.progression?.takeIf { it.isNotBlank() }
+        val localTimestamp = activeBook.progressionUpdatedTimestamp
+
+        val (chosenProgress, chosenTimestamp, isFromRemote) = when {
+            remoteProgress != null && localProgress != null -> {
+                if (remoteTimestamp > localTimestamp) {
+                    Triple(remoteProgress, remoteTimestamp, true)
+                } else {
+                    Triple(localProgress, localTimestamp, false)
+                }
+            }
+            remoteProgress != null -> Triple(remoteProgress, remoteTimestamp, true)
+            localProgress != null -> Triple(localProgress, localTimestamp, false)
+            else -> Triple(null, 0L, false)
+        }
+
+        if (isFromRemote && chosenProgress != null) {
+            try {
+                val database = AppRoomDatabase.getDatabase(getApplication())
+                database.bookDao().updateProgressionById(activeBook.id, chosenProgress, chosenTimestamp)
             } catch (e: Exception) {
-                Log.e("ReaderViewModel", "Failed to fetch group progress", e)
+                Log.e("ReaderViewModel", "Failed to sync newer remote progression to local Room DB", e)
             }
         }
 
-        return stored?.takeIf { it.isNotBlank() }
-            ?: activeBook.progression?.takeIf { it.isNotBlank() }
+        return chosenProgress
     }
 
     private fun progressionOf(locatorJson: String): Float = try {

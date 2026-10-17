@@ -42,7 +42,7 @@ class StatsRepository(
         newlyCompleted: Boolean,
         nowMillis: Long,
         bookKey: String?,
-        zone: ZoneId = ZoneId.systemDefault()
+        zone: ZoneId = ZoneId.of("UTC")
     ) {
         val statsRef = FirestorePaths.userStats(db, uid)
         val userRef = FirestorePaths.user(db, uid)

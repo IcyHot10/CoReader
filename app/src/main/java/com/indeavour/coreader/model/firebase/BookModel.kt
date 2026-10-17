@@ -28,6 +28,7 @@ data class BookModel(
     val title: String = "",
     val author: String = "",
     val progress: String = "",
+    val progressionUpdatedTimestamp: Long = 0,
     @get:PropertyName("isDeleted")
     @set:PropertyName("isDeleted")
     var isDeleted: Boolean = false,
@@ -44,6 +45,7 @@ data class BookModel(
                 title = data["title"] as? String ?: "",
                 author = data["author"] as? String ?: "",
                 progress = data["progress"] as? String ?: "",
+                progressionUpdatedTimestamp = (data["progressionUpdatedTimestamp"] as? Number)?.toLong() ?: 0L,
                 isDeleted = data["isDeleted"] as? Boolean ?: false,
                 addedTimestamp = (data["addedTimestamp"] as? Number)?.toLong() ?: 0L,
                 completedTimestamp = (data["completedTimestamp"] as? Number)?.toLong() ?: 0L
