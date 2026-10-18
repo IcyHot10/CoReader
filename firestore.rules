@@ -13,6 +13,7 @@ rules_version = '2';
 //   groupBooks/{code}/books/{bookId}/annotations/{id}         shared highlights and notes
 //   userStats/{uid}                                           reading stats
 //   readingLists/{uid}                                        to-read list
+//   groupReadingLists/{code}                                  books proposed to a group, with votes
 //
 // Note: rules do NOT cascade into subcollections. Every subcollection above needs its own
 // match block, which is why the annotation paths are spelled out rather than covered by the
@@ -191,6 +192,72 @@ service cloud.firestore {
                             || isGroupAdmin(groupId));
         }
       }
+    }
+
+    // ------------------------------------------------------------------ group reading lists
+
+    // One document per group holding a `books` map of proposals, keyed by generated id. Each
+    // client write adds, removes or changes exactly one book, which is what lets the rules below
+    // tell which book a write touches.
+    match /groupReadingLists/{groupId} {
+      function oldBooks() {
+        return resource == null ? {} : resource.data.get('books', {});
+      }
+
+      function newBooks() {
+        return request.resource.data.get('books', {});
+      }
+
+      // Lists rather than sets, because a single id has to be read back out of them.
+      function addedIds() {
+        return newBooks().keys().removeAll(oldBooks().keys());
+      }
+
+      function removedIds() {
+        return oldBooks().keys().removeAll(newBooks().keys());
+      }
+
+      function changedIds() {
+        return newBooks().diff(oldBooks()).changedKeys();
+      }
+
+      // A new proposal is credited to the caller and starts with only the caller's vote.
+      function isValidProposal(bookId) {
+        let book = newBooks()[bookId];
+        return book.keys().hasOnly(['id', 'title', 'author', 'addedByUid', 'addedByUsername',
+                                    'addedTimestamp', 'votes'])
+               && book.id == bookId
+               && book.title is string && book.title.size() > 0 && book.title.size() <= 500
+               && book.author is string && book.author.size() <= 500
+               && book.addedByUid == request.auth.uid
+               && book.votes == [request.auth.uid];
+      }
+
+      // Matches the screen: the member who proposed a book, or a group admin, may remove it.
+      function isAllowedRemoval(bookId) {
+        return oldBooks()[bookId].addedByUid == request.auth.uid || isGroupAdmin(groupId);
+      }
+
+      function isSingleBookWrite() {
+        return (addedIds().size() == 1 && removedIds().size() == 0 && changedIds().size() == 0
+                && isValidProposal(addedIds()[0]))
+            || (removedIds().size() == 1 && addedIds().size() == 0 && changedIds().size() == 0
+                && isAllowedRemoval(removedIds()[0]))
+            // Voting. Rules cannot read a single id out of a set, so the changed book's
+            // contents are not checked here: any member may edit any one book per write.
+            || (changedIds().size() == 1 && addedIds().size() == 0 && removedIds().size() == 0);
+      }
+
+      allow read: if isGroupMember(groupId);
+
+      allow create, update: if isGroupMember(groupId)
+                            && request.resource.data.keys().hasOnly(['books'])
+                            && isSingleBookWrite();
+
+      // Lets an admin clear the list, and anyone tidy up after the group itself is deleted.
+      allow delete: if isGroupAdmin(groupId)
+                    || (isSignedIn()
+                        && !exists(/databases/$(database)/documents/groups/$(groupId)));
     }
   }
 }

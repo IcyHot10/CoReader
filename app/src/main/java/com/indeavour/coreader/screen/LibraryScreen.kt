@@ -33,6 +33,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.GroupWork
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalDrawerSheet
@@ -149,7 +150,7 @@ import kotlin.coroutines.CoroutineContext
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit, routeToReadingInsights: () -> Unit){
+fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGroup: () -> Unit, routeToGroupInsights: () -> Unit, routeToReadingInsights: () -> Unit){
     val context = LocalContext.current
     val database by lazy { AppRoomDatabase.getDatabase(context = context) }
     val scope = rememberCoroutineScope()
@@ -217,7 +218,7 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                 modifier = Modifier.width(325.dp),
                 drawerContainerColor = MaterialTheme.colorScheme.primaryContainer
             ) {
-                SideMenuContent(userViewModel, routeToLogin, routeToGroup, routeToProgress, routeToReadingInsights)
+                SideMenuContent(userViewModel, routeToLogin, routeToGroup, routeToGroupInsights, routeToReadingInsights)
             }
         }
     ) {
@@ -661,7 +662,7 @@ fun BookCard(
 }
 
 @Composable
-fun SideMenuContent(userViewModel: UserViewModel, routeToLogin: () -> Unit, routeToGroup: () -> Unit, routeToProgress: () -> Unit, routeToReadingInsights: () -> Unit){
+fun SideMenuContent(userViewModel: UserViewModel, routeToLogin: () -> Unit, routeToGroup: () -> Unit, routeToGroupInsights: () -> Unit, routeToReadingInsights: () -> Unit){
     val auth = FirebaseAuth.getInstance()
     val username by userViewModel.username.collectAsState()
     val context = LocalContext.current
@@ -773,10 +774,10 @@ fun SideMenuContent(userViewModel: UserViewModel, routeToLogin: () -> Unit, rout
             )
 
             NavigationDrawerItem(
-                label = { Text("View Group Book Progress") },
+                label = { Text("Group Insights") },
                 selected = false,
-                onClick = routeToProgress,
-                icon = { Icon(Icons.Default.LineAxis, contentDescription = null) },
+                onClick = routeToGroupInsights,
+                icon = { Icon(Icons.Default.GroupWork, contentDescription = null) },
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 colors = NavigationDrawerItemDefaults.colors(
                     unselectedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)

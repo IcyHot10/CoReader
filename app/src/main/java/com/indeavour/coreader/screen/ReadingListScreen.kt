@@ -8,7 +8,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -122,11 +121,6 @@ fun ReadingListScreen(onBack: () -> Unit) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.secondary)
                     }
                 },
-                actions = {
-                    IconButton(onClick = { viewModel.generateAISuggestions() }) {
-                        Icon(Icons.Default.AutoAwesome, contentDescription = "AI Suggestions", tint = MaterialTheme.colorScheme.secondary)
-                    }
-                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Teal)
             )
         },
@@ -147,7 +141,7 @@ fun ReadingListScreen(onBack: () -> Unit) {
                 item {
                     Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
-                            "Your reading list is empty.\nTap + to add a book or use the AI sparkle for suggestions!",
+                            "Your reading list is empty.\nTap + to add a book!",
                             style = MaterialTheme.typography.bodyLarge,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
@@ -205,7 +199,7 @@ fun ReadingListCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {

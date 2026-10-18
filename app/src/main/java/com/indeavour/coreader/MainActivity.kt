@@ -11,7 +11,9 @@ import androidx.navigation.compose.rememberNavController
 import com.google.firebase.auth.FirebaseAuth
 import com.indeavour.coreader.screen.BookScreen
 import com.indeavour.coreader.screen.GroupScreen
+import com.indeavour.coreader.screen.GroupInsightsScreen
 import com.indeavour.coreader.screen.GroupProgressScreen
+import com.indeavour.coreader.screen.GroupReadingListScreen
 import com.indeavour.coreader.screen.LibraryScreen
 import com.indeavour.coreader.screen.LoginScreen
 import com.indeavour.coreader.screen.ReadingInsightsScreen
@@ -53,8 +55,21 @@ fun AppNavigation(){
                 },
                 routeToBook = { navController.navigate("book") },
                 routeToGroup = { navController.navigate("group") },
-                routeToProgress = { navController.navigate("progress") },
+                routeToGroupInsights = { navController.navigate("group_insights") },
                 routeToReadingInsights = { navController.navigate("reading_insights") }
+            )
+        }
+        composable("group_insights") {
+            GroupInsightsScreen(
+                onBack = { navController.popBackStack() },
+                routeToGroupProgress = { navController.navigate("progress") },
+                routeToGroupReadingList = { navController.navigate("group_reading_list") }
+            )
+        }
+        composable("group_reading_list") {
+            GroupReadingListScreen(
+                onBack = { navController.popBackStack() },
+                routeToManageGroup = { navController.navigate("group") }
             )
         }
         composable("reading_insights") {
