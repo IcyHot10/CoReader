@@ -50,7 +50,7 @@ fun GroupInsightsScreen(
             )
 
             InsightCard(
-                title = "Group Next Book Selection",
+                title = "Group Book Picker",
                 description = "Suggest and decide on the next book for your group",
                 icon = Icons.AutoMirrored.Filled.List,
                 onClick = routeToGroupReadingList
