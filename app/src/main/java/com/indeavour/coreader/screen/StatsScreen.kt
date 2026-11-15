@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.indeavour.coreader.AppRoomDatabase
+import com.indeavour.coreader.domain.ReadingStatsCalculator
 import com.indeavour.coreader.model.firebase.UserStats
 import com.indeavour.coreader.model.firebase.UserStatsDocument
 import com.indeavour.coreader.ui.theme.Teal
@@ -47,16 +48,7 @@ private fun progressOf(locatorJson: String?): Float = try {
     0f
 }
 
-private fun formatDuration(seconds: Long): String {
-    val minutes = seconds / 60
-    val hours = minutes / 60
-    return when {
-        seconds <= 0 -> "0 min"
-        hours > 0 -> "${hours}h ${minutes % 60}m"
-        minutes > 0 -> "$minutes min"
-        else -> "<1 min"
-    }
-}
+private fun formatDuration(seconds: Long): String = ReadingStatsCalculator.formatDuration(seconds)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -120,8 +112,8 @@ fun StatsScreen(onBack: () -> Unit) {
 
                     // The stored streak only changes when something is read, so work out what
                     // it is worth today instead of showing it as-is.
-                    currentStreak = StatsRepository.liveStreak(stats, today, zone)
-                    readToday = StatsRepository.readOn(stats, today, zone)
+                    currentStreak = ReadingStatsCalculator.liveStreak(stats, today, zone)
+                    readToday = ReadingStatsCalculator.readOn(stats, today, zone)
                     maxStreak = maxOf(
                         currentStreak,
                         stats.lifetimeStats.maxStreak,
@@ -209,7 +201,7 @@ fun StatsScreen(onBack: () -> Unit) {
                 item {
                     val week = (6 downTo 0).map { daysAgo ->
                         val day = today.minusDays(daysAgo.toLong())
-                        day to StatsRepository.secondsOn(stats, day)
+                        day to ReadingStatsCalculator.secondsOn(stats, day)
                     }
                     WeekCard(week)
                 }

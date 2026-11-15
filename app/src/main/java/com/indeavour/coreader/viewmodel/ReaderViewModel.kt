@@ -8,6 +8,12 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.indeavour.coreader.AppRoomDatabase
+import com.indeavour.coreader.domain.ChapterTitles
+import com.indeavour.coreader.domain.ProgressLookup
+import com.indeavour.coreader.domain.ReadingSessionTimer
+import com.indeavour.coreader.domain.ReadingStatsCalculator
+import com.indeavour.coreader.domain.ReturnPoint
+import com.indeavour.coreader.domain.TocEntry
 import com.indeavour.coreader.model.firebase.AnnotationModel
 import com.indeavour.coreader.model.firebase.BookModel
 import com.indeavour.coreader.model.firebase.MemberColour
@@ -194,16 +200,10 @@ class ReaderViewModel(
     private var annotationsListener: ListenerRegistration? = null
 
     private var lastLocator: Locator? = null
-    private var sessionStartTime: Long = 0
-    private var lastTickTime: Long = 0
-    private var secondsAccumulator: Long = 0
     private var wasCompletedAtStart: Boolean = false
 
-    /** Seconds read since the reader was last opened or resumed; reported when the session ends. */
-    private var sessionSeconds: Long = 0
-
-    /** True between leaving the reader and coming back, so that gap is never counted as reading. */
-    private var isSessionPaused: Boolean = false
+    /** Counts reading time; see [ReadingSessionTimer] for what does and does not count. */
+    private val sessionTimer = ReadingSessionTimer(MAX_SECONDS_PER_PAGE)
 
     // Stats that could not be written (the cloud write needs a connection) wait here and go out
     // with the next write instead of being dropped.
@@ -211,39 +211,24 @@ class ReaderViewModel(
     @Volatile private var unsyncedCompletion: Boolean = false
 
     private fun startReadingSession(initialProgress: Float) {
-        val now = System.currentTimeMillis()
-        sessionStartTime = now
-        lastTickTime = now
-        secondsAccumulator = 0
-        sessionSeconds = 0
-        isSessionPaused = false
+        sessionTimer.start(System.currentTimeMillis())
         wasCompletedAtStart = initialProgress >= COMPLETION_THRESHOLD
     }
 
     private fun syncReadingProgress(isCompletedNow: Boolean, forceSync: Boolean = false) {
-        if (lastTickTime == 0L) return // Session not started
+        if (!sessionTimer.isStarted) return
 
         val now = System.currentTimeMillis()
-        if (!isSessionPaused) {
-            val deltaSeconds = (now - lastTickTime) / 1000
-            if (deltaSeconds > 0) {
-                // A single page left open for a long time is the reader walking away, not reading.
-                val counted = deltaSeconds.coerceAtMost(MAX_SECONDS_PER_PAGE)
-                secondsAccumulator += counted
-                sessionSeconds += counted
-                lastTickTime = now
-            }
-        }
+        sessionTimer.tick(now)
 
         val newlyCompleted = !wasCompletedAtStart && isCompletedNow
-        val endedSessionSeconds = if (forceSync) sessionSeconds.also { sessionSeconds = 0 } else 0L
+        val endedSessionSeconds = if (forceSync) sessionTimer.endSession() else 0L
 
         // Only trigger heavy updates if forced (e.g. leaving screen) or if we have a completion event
-        val hasTimeToSave = forceSync && (secondsAccumulator > 0 || unsyncedSeconds > 0)
-        val endsCountableSession = endedSessionSeconds >= StatsRepository.MIN_SESSION_SECONDS
+        val hasTimeToSave = forceSync && (sessionTimer.unsavedSeconds > 0 || unsyncedSeconds > 0)
+        val endsCountableSession = endedSessionSeconds >= ReadingStatsCalculator.MIN_SESSION_SECONDS
         if (hasTimeToSave || endsCountableSession || newlyCompleted) {
-            val secondsToSave = secondsAccumulator
-            secondsAccumulator = 0
+            val secondsToSave = sessionTimer.takeUnsavedSeconds()
             if (newlyCompleted) wasCompletedAtStart = true
 
             val bookId = loadedBookId ?: return
@@ -401,15 +386,12 @@ class ReaderViewModel(
         val currentProgress = _progress.value.value
         val isCompletedNow = currentProgress >= COMPLETION_THRESHOLD
         syncReadingProgress(isCompletedNow, forceSync = true)
-        isSessionPaused = true
+        sessionTimer.pause()
     }
 
     // Restart the tick clock so time spent paused/backgrounded is not counted as reading time.
     fun resumeReadingSession() {
-        if (lastTickTime != 0L) {
-            lastTickTime = System.currentTimeMillis()
-            isSessionPaused = false
-        }
+        sessionTimer.resume(System.currentTimeMillis())
     }
 
     fun setBookReady(ready: Boolean) {
@@ -444,8 +426,8 @@ class ReaderViewModel(
 
         // While the reader is only visiting another part of the book, the saved position stays
         // where they were actually reading.
-        settleReturnPoint(progression.toDouble())
-        if (_returnLocator.value != null) return
+        if (returnPoint.onProgress(progression.toDouble())) _returnLocator.value = null
+        if (returnPoint.isActive) return
 
         lastLocator = locator
         saveProgressionLocally(locator)
@@ -474,8 +456,7 @@ class ReaderViewModel(
      */
     val returnLocator: StateFlow<Locator?> = _returnLocator
 
-    /** Whether the return point lies ahead of where the jump landed; unknown until it lands. */
-    private var returnPointIsAhead: Boolean? = null
+    private val returnPoint = ReturnPoint<Locator>(RETURN_POINT_TOLERANCE)
 
     private var positions: List<Locator> = emptyList()
 
@@ -484,28 +465,17 @@ class ReaderViewModel(
      * further jumps keep it, so it always leads back to where reading actually stopped.
      */
     fun markReturnPoint(targetProgression: Double? = null) {
-        if (_returnLocator.value != null) {
-            // Another jump: work out afresh which way "back" is once it lands, so that jumping
-            // straight past the return point is not mistaken for having read back to it.
-            returnPointIsAhead = null
-            return
-        }
         val from = currentLocator ?: lastLocator ?: return
-        val fromProgression = from.locations.totalProgression
-        if (targetProgression != null && fromProgression != null &&
-            kotlin.math.abs(targetProgression - fromProgression) < RETURN_POINT_TOLERANCE
-        ) {
-            return // Not going anywhere worth coming back from.
+        if (returnPoint.mark(from, from.locations.totalProgression, targetProgression)) {
+            lastLocator = from
+            _returnLocator.value = from
         }
-        lastLocator = from
-        returnPointIsAhead = null
-        _returnLocator.value = from
     }
 
     /** The reader is heading back to the return point; normal progress saving resumes there. */
     fun clearReturnPoint() {
+        returnPoint.clear()
         _returnLocator.value = null
-        returnPointIsAhead = null
     }
 
     /** The reader chose to stay where they jumped to, so that becomes their position. */
@@ -517,36 +487,13 @@ class ReaderViewModel(
         }
     }
 
-    /** Drops the return point once the reader has read (or paged) their way back to it. */
-    private fun settleReturnPoint(current: Double) {
-        val target = _returnLocator.value?.locations?.totalProgression ?: return
-        val isAhead = returnPointIsAhead
-        if (isAhead == null) {
-            // Wait for the jump to land before deciding which way "back" is.
-            if (kotlin.math.abs(current - target) > RETURN_POINT_TOLERANCE) {
-                returnPointIsAhead = current < target
-            }
-            return
-        }
-        val reached = if (isAhead) {
-            current >= target - RETURN_POINT_TOLERANCE
-        } else {
-            current <= target + RETURN_POINT_TOLERANCE
-        }
-        if (reached) clearReturnPoint()
-    }
-
     /** The position closest to [totalProgression] (0..1) through the whole book. */
     fun locatorAt(totalProgression: Float): Locator? {
-        if (positions.isEmpty()) return null
-        val wanted = totalProgression.toDouble()
-        val found = positions.binarySearchBy(wanted) { it.locations.totalProgression ?: 0.0 }
-        if (found >= 0) return positions[found]
-        val after = (-found - 1).coerceIn(0, positions.lastIndex)
-        val before = (after - 1).coerceAtLeast(0)
-        val distanceAfter = kotlin.math.abs((positions[after].locations.totalProgression ?: 0.0) - wanted)
-        val distanceBefore = kotlin.math.abs((positions[before].locations.totalProgression ?: 0.0) - wanted)
-        return if (distanceBefore <= distanceAfter) positions[before] else positions[after]
+        val index = ProgressLookup.nearestIndex(
+            positions.map { it.locations.totalProgression ?: 0.0 },
+            totalProgression.toDouble()
+        )
+        return positions.getOrNull(index)
     }
 
     /** Chapter name at [totalProgression], for previewing where the slider will land. */
@@ -569,33 +516,20 @@ class ReaderViewModel(
      */
     private fun chapterTitleFor(pub: Publication, locator: Locator): String {
         if (chapterTitlesFor !== pub) {
-            val tocTitles = mutableMapOf<String, String>()
-            fun visit(links: List<Link>) {
-                for (link in links) {
-                    val title = link.title?.trim().orEmpty()
-                    val key = resourceKey(link.url().toString())
-                    // Parents are visited first, so a chapter wins over its own sub-sections.
-                    if (title.isNotEmpty() && key !in tocTitles) tocTitles[key] = title
-                    visit(link.children)
-                }
-            }
-            visit(pub.tableOfContents)
-
-            var current = ""
-            chapterTitles = pub.readingOrder.map { link ->
-                tocTitles[resourceKey(link.url().toString())]?.let { current = it }
-                current
-            }
+            fun entry(link: Link): TocEntry =
+                TocEntry(link.url().toString(), link.title, link.children.map(::entry))
+            chapterTitles = ChapterTitles.byReadingOrder(
+                toc = pub.tableOfContents.map(::entry),
+                readingOrder = pub.readingOrder.map { it.url().toString() }
+            )
             chapterTitlesFor = pub
         }
 
-        val key = resourceKey(locator.href.toString())
-        val index = pub.readingOrder.indexOfFirst { resourceKey(it.url().toString()) == key }
+        val key = ChapterTitles.resourceKey(locator.href.toString())
+        val index = pub.readingOrder.indexOfFirst { ChapterTitles.resourceKey(it.url().toString()) == key }
         return chapterTitles.getOrNull(index)?.takeIf { it.isNotEmpty() }
             ?: locator.title?.trim().orEmpty()
     }
-
-    private fun resourceKey(href: String): String = href.substringBefore('#')
 
     /**
      * Persists the current reading position. Writes only the fields that changed, on both the
