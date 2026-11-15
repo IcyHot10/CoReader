@@ -33,4 +33,21 @@ google-services.json
 
 # Android Profiling
 *.hprof
-key_store/coreader
+# Signing keys and certificates (never commit)
+key_store/
+*.pem
+
+# Release build outputs (signed bundles, R8 mapping files)
+app/release/
+mapping.txt
+
+# Kotlin compiler caches
+.kotlin/
+
+# Firebase CLI / emulator caches
+.firebase/
+
+# AI agent tooling (locally installed skills, per-user settings)
+.agents/
+.claude/
+skills-lock.json

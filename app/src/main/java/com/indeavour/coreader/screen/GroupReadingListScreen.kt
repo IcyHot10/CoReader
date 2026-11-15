@@ -51,11 +51,14 @@ fun GroupReadingListScreen(
     val groupName by viewModel.groupName.collectAsState()
     val books by viewModel.books.collectAsState()
     val isAdmin by viewModel.isAdmin.collectAsState()
+    val suggestions by viewModel.suggestions.collectAsState()
+    val isSuggesting by viewModel.isSuggesting.collectAsState()
     val context = LocalContext.current
     val currentUid = FirebaseAuth.getInstance().currentUser?.uid ?: ""
 
     var showAddDialog by remember { mutableStateOf(false) }
     var showWheelDialog by remember { mutableStateOf(false) }
+    var showSuggestDialog by remember { mutableStateOf(false) }
     var bookTitle by remember { mutableStateOf("") }
     var bookAuthor by remember { mutableStateOf("") }
 
@@ -133,6 +136,19 @@ fun GroupReadingListScreen(
         )
     }
 
+    if (showSuggestDialog) {
+        AiSuggestDialog(
+            description = "Get book suggestions for your group based on what you've read together and already proposed.",
+            onDismiss = { showSuggestDialog = false },
+            onSuggest = { request ->
+                showSuggestDialog = false
+                viewModel.generateAISuggestions(request) { error ->
+                    error?.let { AppUtils.showToast(context, it) }
+                }
+            }
+        )
+    }
+
     if (showWheelDialog) {
         SpinWheelDialog(
             books = books,
@@ -147,6 +163,11 @@ fun GroupReadingListScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.secondary)
+                    }
+                },
+                actions = {
+                    if (!activeGroupCode.isNullOrBlank()) {
+                        AiSuggestAction(isSuggesting = isSuggesting, onClick = { showSuggestDialog = true })
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Teal)
@@ -251,6 +272,26 @@ fun GroupReadingListScreen(
                         fontWeight = FontWeight.Bold,
                         color = Teal
                     )
+                }
+
+                if (suggestions.isNotEmpty()) {
+                    item {
+                        Text("Suggested for the Group (AI)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Teal)
+                    }
+                    items(suggestions, key = { "suggestion_${it.title}_${it.author}" }) { suggestion ->
+                        SuggestionCard(
+                            title = suggestion.title,
+                            author = suggestion.author,
+                            reason = suggestion.reason,
+                            addLabel = "Propose to Group",
+                            onAdd = {
+                                viewModel.proposeSuggestion(suggestion) { success ->
+                                    if (!success) AppUtils.showToast(context, "Failed to propose book")
+                                }
+                            },
+                            onDismiss = { viewModel.dismissSuggestion(suggestion) }
+                        )
+                    }
                 }
 
                 if (books.isEmpty()) {

@@ -1,18 +1,30 @@
 package com.indeavour.coreader.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.ListenerRegistration
+import com.indeavour.coreader.model.ai.AgentTool
+import com.indeavour.coreader.model.ai.BookSuggestionAgent
+import com.indeavour.coreader.model.ai.normalizedTitle
 import com.indeavour.coreader.model.firebase.ReadingListBook
 import com.indeavour.coreader.repository.ReadingListRepository
 import com.indeavour.coreader.repository.UserRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.util.UUID
 
 class ReadingListViewModel : ViewModel() {
+
+    private companion object {
+        const val TAG = "ReadingListViewModel"
+    }
     private val auth = FirebaseAuth.getInstance()
     private val readingLists = ReadingListRepository()
     private val users = UserRepository()
@@ -23,7 +35,27 @@ class ReadingListViewModel : ViewModel() {
     private val _suggestions = MutableStateFlow<List<ReadingListBook>>(emptyList())
     val suggestions: StateFlow<List<ReadingListBook>> = _suggestions
 
+    private val _isSuggesting = MutableStateFlow(false)
+    val isSuggesting: StateFlow<Boolean> = _isSuggesting
+
+    /** Every reading list entry, including dismissed suggestions, so the agent can avoid repeats. */
+    private var allEntries: List<ReadingListBook> = emptyList()
+
     private var readingListListener: ListenerRegistration? = null
+
+    private val suggestionAgent = BookSuggestionAgent(
+        audience = "a single reader",
+        tools = listOf(
+            AgentTool(
+                name = "get_library",
+                description = "Books in the reader's library, most recently opened first, with whether each is finished."
+            ) { libraryJson() },
+            AgentTool(
+                name = "get_reading_list",
+                description = "The reader's to-read list in priority order, plus pending and dismissed AI suggestions."
+            ) { readingListJson() }
+        )
+    )
 
     init {
         startListener()
@@ -33,6 +65,7 @@ class ReadingListViewModel : ViewModel() {
         val uid = auth.currentUser?.uid ?: return
         readingListListener?.remove()
         readingListListener = readingLists.listen(uid) { books ->
+            allEntries = books
             _readingList.value = books.filter { !it.isSuggestion }
             _suggestions.value = books.filter { it.isSuggestion && !it.isDismissed }
         }
@@ -124,32 +157,81 @@ class ReadingListViewModel : ViewModel() {
         }
     }
 
-    fun generateAISuggestions() {
-        val uid = auth.currentUser?.uid ?: return
+    /**
+     * Asks the AI agent for new books and saves them as pending suggestions.
+     * [onResult] receives an error message, or null on success.
+     */
+    fun generateAISuggestions(request: String, onResult: (String?) -> Unit) {
+        val uid = auth.currentUser?.uid ?: return onResult("You need to be signed in")
+        if (_isSuggesting.value) return
+        _isSuggesting.value = true
         viewModelScope.launch {
             try {
-                val libraryBooks = users.user(uid)?.books?.values?.filter { !it.isDeleted }
-                    ?: emptyList()
-                if (libraryBooks.isEmpty()) return@launch
+                Log.d(TAG, "Suggest: loading library")
+                val libraryTitles = users.user(uid)?.books?.values.orEmpty().map { normalizedTitle(it.title) }
+                val known = (libraryTitles + allEntries.map { normalizedTitle(it.title) }).toSet()
+                Log.d(TAG, "Suggest: calling agent")
+                val fresh = suggestionAgent.suggest(request)
+                    .filter { normalizedTitle(it.title) !in known }
+                    .distinctBy { normalizedTitle(it.title) }
+                if (fresh.isEmpty()) return@launch onResult("No new suggestions this time, try again")
 
-                // Basic mock logic for suggestions: a real implementation would send the library
-                // as context to a model. For now a "similar" book is seeded from a random author.
-                val seedBook = libraryBooks.random()
-                val suggestion = ReadingListBook(
-                    id = UUID.randomUUID().toString(),
-                    title = "The Next ${seedBook.title} Story",
-                    author = seedBook.author,
-                    addedTimestamp = System.currentTimeMillis(),
-                    position = nextPosition(),
-                    isSuggestion = true
-                )
-
-                val alreadyPresent = (_readingList.value + _suggestions.value)
-                    .any { it.title == suggestion.title }
-                if (!alreadyPresent) readingLists.put(uid, suggestion)
+                Log.d(TAG, "Suggest: saving ${fresh.size} suggestions")
+                fresh.forEach { suggestion ->
+                    readingLists.put(
+                        uid,
+                        ReadingListBook(
+                            id = UUID.randomUUID().toString(),
+                            title = suggestion.title,
+                            author = suggestion.author,
+                            addedTimestamp = System.currentTimeMillis(),
+                            isSuggestion = true,
+                            reason = suggestion.reason
+                        )
+                    )
+                }
+                Log.d(TAG, "Suggest: done")
+                onResult(null)
             } catch (e: Exception) {
-                // Suggestions are optional; a failure leaves the list unchanged.
+                Log.e(TAG, "Suggest failed", e)
+                onResult(e.message ?: "Failed to get suggestions")
+            } finally {
+                _isSuggesting.value = false
             }
+        }
+    }
+
+    private suspend fun libraryJson(): JsonArray {
+        val uid = auth.currentUser?.uid ?: return JsonArray(emptyList())
+        val books = users.user(uid)?.books?.values.orEmpty()
+            .filter { !it.isDeleted }
+            .sortedByDescending { it.progressionUpdatedTimestamp }
+            .take(50)
+        return buildJsonArray {
+            books.forEach { book ->
+                add(buildJsonObject {
+                    put("title", book.title)
+                    put("author", book.author)
+                    put("finished", book.completedTimestamp > 0)
+                })
+            }
+        }
+    }
+
+    private fun readingListJson(): JsonArray = buildJsonArray {
+        allEntries.forEach { book ->
+            add(buildJsonObject {
+                put("title", book.title)
+                put("author", book.author)
+                put(
+                    "status",
+                    when {
+                        !book.isSuggestion -> "to-read"
+                        book.isDismissed -> "dismissed suggestion"
+                        else -> "pending suggestion"
+                    }
+                )
+            })
         }
     }
 
