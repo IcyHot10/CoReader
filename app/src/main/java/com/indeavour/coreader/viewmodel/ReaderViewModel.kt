@@ -108,7 +108,7 @@ class ReaderViewModel(
 
     fun setSelectedHighlightColor(color: Int) {
         _selectedHighlightColor.value = color
-        
+
         // Save to Firestore
         val uid = auth.currentUser?.uid ?: return
         saveScope.launch {
@@ -174,11 +174,24 @@ class ReaderViewModel(
     private var secondsAccumulator: Long = 0
     private var wasCompletedAtStart: Boolean = false
 
+    /** Seconds read since the reader was last opened or resumed; reported when the session ends. */
+    private var sessionSeconds: Long = 0
+
+    /** True between leaving the reader and coming back, so that gap is never counted as reading. */
+    private var isSessionPaused: Boolean = false
+
+    // Stats that could not be written (the cloud write needs a connection) wait here and go out
+    // with the next write instead of being dropped.
+    @Volatile private var unsyncedSeconds: Long = 0
+    @Volatile private var unsyncedCompletion: Boolean = false
+
     private fun startReadingSession(initialProgress: Float) {
         val now = System.currentTimeMillis()
         sessionStartTime = now
         lastTickTime = now
         secondsAccumulator = 0
+        sessionSeconds = 0
+        isSessionPaused = false
         wasCompletedAtStart = initialProgress >= COMPLETION_THRESHOLD
     }
 
@@ -186,52 +199,78 @@ class ReaderViewModel(
         if (lastTickTime == 0L) return // Session not started
 
         val now = System.currentTimeMillis()
-        val deltaSeconds = (now - lastTickTime) / 1000
-        
-        if (deltaSeconds > 0) {
-            secondsAccumulator += deltaSeconds
-            lastTickTime = now
+        if (!isSessionPaused) {
+            val deltaSeconds = (now - lastTickTime) / 1000
+            if (deltaSeconds > 0) {
+                // A single page left open for a long time is the reader walking away, not reading.
+                val counted = deltaSeconds.coerceAtMost(MAX_SECONDS_PER_PAGE)
+                secondsAccumulator += counted
+                sessionSeconds += counted
+                lastTickTime = now
+            }
         }
-        
+
         val newlyCompleted = !wasCompletedAtStart && isCompletedNow
+        val endedSessionSeconds = if (forceSync) sessionSeconds.also { sessionSeconds = 0 } else 0L
 
         // Only trigger heavy updates if forced (e.g. leaving screen) or if we have a completion event
-        if ((forceSync && secondsAccumulator > 0) || newlyCompleted) {
+        val hasTimeToSave = forceSync && (secondsAccumulator > 0 || unsyncedSeconds > 0)
+        val endsCountableSession = endedSessionSeconds >= StatsRepository.MIN_SESSION_SECONDS
+        if (hasTimeToSave || endsCountableSession || newlyCompleted) {
             val secondsToSave = secondsAccumulator
             secondsAccumulator = 0
             if (newlyCompleted) wasCompletedAtStart = true
-            
+
             val bookId = loadedBookId ?: return
             val uid = auth.currentUser?.uid ?: return
 
             saveScope.launch {
                 // 1. Save to Local Room
                 val database = AppRoomDatabase.getDatabase(getApplication())
-                database.readingActivityDao().insert(ReadingActivity(
-                    bookId = bookId,
-                    timestamp = now,
-                    durationSeconds = secondsToSave,
-                    isCompletedEvent = newlyCompleted
-                ))
+                if (secondsToSave > 0 || newlyCompleted) {
+                    database.readingActivityDao().insert(ReadingActivity(
+                        bookId = bookId,
+                        timestamp = now,
+                        durationSeconds = secondsToSave,
+                        isCompletedEvent = newlyCompleted
+                    ))
+                }
 
                 if (newlyCompleted) {
                     database.bookDao().setCompletedTimestamp(bookId, now)
                 }
 
                 // 2. Push to Firestore for cross-device sync
+                val cloudSeconds = secondsToSave + unsyncedSeconds
+                val cloudCompletion = newlyCompleted || unsyncedCompletion
+                unsyncedSeconds = 0
+                unsyncedCompletion = false
                 try {
                     val pub = _publication.value
                     val bookKey = pub?.let { bookKeyOf(it) }
                     stats.recordReading(
                         uid = uid,
-                        secondsToSave = secondsToSave,
-                        newlyCompleted = newlyCompleted,
+                        secondsToSave = cloudSeconds,
+                        newlyCompleted = cloudCompletion,
                         nowMillis = now,
-                        bookKey = bookKey
+                        bookKey = bookKey,
+                        sessionSeconds = endedSessionSeconds
                     )
                 } catch (e: Exception) {
                     Log.e("ReaderViewModel", "Failed to sync reading activity to Firestore", e)
+                    unsyncedSeconds += cloudSeconds
+                    unsyncedCompletion = unsyncedCompletion || cloudCompletion
                 }
+            }
+        }
+    }
+
+    private fun recordAnnotationStat(uid: String, isNote: Boolean) {
+        saveScope.launch {
+            try {
+                stats.recordAnnotation(uid, isNote, System.currentTimeMillis())
+            } catch (e: Exception) {
+                Log.e("ReaderViewModel", "Failed to record annotation stat", e)
             }
         }
     }
@@ -333,12 +372,14 @@ class ReaderViewModel(
         val currentProgress = _progress.value.value
         val isCompletedNow = currentProgress >= COMPLETION_THRESHOLD
         syncReadingProgress(isCompletedNow, forceSync = true)
+        isSessionPaused = true
     }
 
     // Restart the tick clock so time spent paused/backgrounded is not counted as reading time.
     fun resumeReadingSession() {
         if (lastTickTime != 0L) {
             lastTickTime = System.currentTimeMillis()
+            isSessionPaused = false
         }
     }
 
@@ -356,7 +397,7 @@ class ReaderViewModel(
         val progression = locator.locations.totalProgression?.toFloat() ?: (pageIndex.toFloat() / (totalPages - 1).coerceAtLeast(1))
         val percentage = (progression * 100).coerceIn(0f, 100f)
         val isCompletedNow = progression >= COMPLETION_THRESHOLD
-        
+
         _progress.value = ReadingProgress(
             value = progression,
             pageLabel = "Page ${pageIndex + 1} of $totalPages",
@@ -698,6 +739,7 @@ class ReaderViewModel(
         saveScope.launch {
             try {
                 annotations.add(scope, bookKey, annotation)
+                recordAnnotationStat(uid, isNote = false)
             } catch (e: Exception) {
                 Log.e("ReaderViewModel", "Failed to add highlight", e)
             }
@@ -727,6 +769,7 @@ class ReaderViewModel(
         saveScope.launch {
             try {
                 annotations.add(scope, bookKey, annotation)
+                recordAnnotationStat(uid, isNote = true)
             } catch (e: Exception) {
                 Log.e("ReaderViewModel", "Failed to add note", e)
             }
@@ -805,7 +848,7 @@ class ReaderViewModel(
             repository.openBook(file)
                 .onSuccess { pub ->
                     Log.d("ReaderViewModel", "Book opened successfully: ${pub.metadata.title}")
-                    
+
                     val locator = if (progression != null) {
                         try {
                             Locator.fromJSON(org.json.JSONObject(progression))
@@ -816,7 +859,7 @@ class ReaderViewModel(
                     } else {
                         null
                     }
-                    
+
                     _initialLocator.value = locator
                     lastLocator = locator
                     _publication.value = pub
@@ -833,6 +876,7 @@ class ReaderViewModel(
         private const val UNKNOWN_AUTHOR = "Unknown Author"
         private const val UNTITLED_BOOK = "Untitled Book"
         private const val COMPLETION_THRESHOLD = 0.995f
+        private const val MAX_SECONDS_PER_PAGE = 300L
 
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
