@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import org.readium.r2.shared.publication.Link
 import org.readium.r2.shared.publication.Locator
 import org.readium.r2.shared.publication.Publication
 import java.io.File
@@ -237,7 +238,9 @@ class ReaderViewModel(
 
     private fun bookKeyOf(pub: Publication): String {
         val author = pub.metadata.authors.firstOrNull()?.name ?: UNKNOWN_AUTHOR
-        return "${pub.metadata.title}_$author"
+        // Must match the key the library stores the book under, including its fallback title,
+        // or annotations would be written to a different path than the one being listened to.
+        return "${pub.metadata.title ?: UNTITLED_BOOK}_$author"
     }
 
     private fun annotationScope(groupId: String?, uid: String): AnnotationScope =
@@ -348,13 +351,7 @@ class ReaderViewModel(
 
     fun updateProgress(pageIndex: Int, totalPages: Int, locator: Locator) {
         val pub = _publication.value ?: return
-        val chapterLabel = pub.let {
-            val totalChapters = it.readingOrder.size
-            val currentChapterIndex = it.readingOrder.indexOfFirst { link -> link.url() == locator.href }
-            if (currentChapterIndex != -1) {
-                "Chapter ${currentChapterIndex + 1} of $totalChapters"
-            } else ""
-        }
+        val chapterLabel = chapterTitleFor(pub, locator)
 
         val progression = locator.locations.totalProgression?.toFloat() ?: (pageIndex.toFloat() / (totalPages - 1).coerceAtLeast(1))
         val percentage = (progression * 100).coerceIn(0f, 100f)
@@ -382,6 +379,47 @@ class ReaderViewModel(
             database.bookDao().updateActiveBookProgression(locator.toJSON().toString(), now)
         }
     }
+
+    private var chapterTitlesFor: Publication? = null
+    private var chapterTitles: List<String> = emptyList()
+
+    /**
+     * The name of the chapter [locator] falls in, taken from the table of contents.
+     *
+     * An EPUB's reading order is a list of files, not chapters: one chapter is often split over
+     * several files and covers, title pages and the like are files too, so counting them gives
+     * misleading "Chapter x of y" numbers. A file without its own table-of-contents entry is
+     * treated as a continuation of the last one that had an entry.
+     */
+    private fun chapterTitleFor(pub: Publication, locator: Locator): String {
+        if (chapterTitlesFor !== pub) {
+            val tocTitles = mutableMapOf<String, String>()
+            fun visit(links: List<Link>) {
+                for (link in links) {
+                    val title = link.title?.trim().orEmpty()
+                    val key = resourceKey(link.url().toString())
+                    // Parents are visited first, so a chapter wins over its own sub-sections.
+                    if (title.isNotEmpty() && key !in tocTitles) tocTitles[key] = title
+                    visit(link.children)
+                }
+            }
+            visit(pub.tableOfContents)
+
+            var current = ""
+            chapterTitles = pub.readingOrder.map { link ->
+                tocTitles[resourceKey(link.url().toString())]?.let { current = it }
+                current
+            }
+            chapterTitlesFor = pub
+        }
+
+        val key = resourceKey(locator.href.toString())
+        val index = pub.readingOrder.indexOfFirst { resourceKey(it.url().toString()) == key }
+        return chapterTitles.getOrNull(index)?.takeIf { it.isNotEmpty() }
+            ?: locator.title?.trim().orEmpty()
+    }
+
+    private fun resourceKey(href: String): String = href.substringBefore('#')
 
     /**
      * Persists the current reading position. Writes only the fields that changed, on both the
@@ -793,6 +831,7 @@ class ReaderViewModel(
         /** Sentinel for "not reading in a group"; also the value stored in [loadedGroupId]. */
         private const val NO_GROUP = "none"
         private const val UNKNOWN_AUTHOR = "Unknown Author"
+        private const val UNTITLED_BOOK = "Untitled Book"
         private const val COMPLETION_THRESHOLD = 0.995f
 
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {

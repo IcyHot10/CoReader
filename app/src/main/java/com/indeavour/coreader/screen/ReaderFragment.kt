@@ -59,6 +59,8 @@ import com.indeavour.coreader.viewmodel.ReaderViewModel
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.readium.r2.navigator.DecorableNavigator
 import org.readium.r2.navigator.Decoration
 import org.readium.r2.navigator.epub.EpubNavigatorFactory
@@ -346,10 +348,10 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         val notes by viewModel.notes.collectAsState()
         val fontSize by viewModel.fontSize.collectAsState()
 
+        // Push every change straight to the navigator, including ones that arrive from other
+        // group members while the book is open.
         LaunchedEffect(highlights, notes, isBookReady) {
-            if (isBookReady) {
-                applyAnnotations(highlights, notes)
-            }
+            applyAnnotations(highlights, notes)
         }
 
         // Handle font size changes
@@ -575,12 +577,18 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Row(
+                                            modifier = Modifier.weight(1f).padding(end = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
                                             if (progress.chapterLabel.isNotEmpty()) {
                                                 Text(
                                                     text = progress.chapterLabel,
+                                                    modifier = Modifier.weight(1f, fill = false),
                                                     style = MaterialTheme.typography.labelSmall,
-                                                    color = colorScheme.secondary
+                                                    color = colorScheme.secondary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
                                                 Text(
                                                     text = " • ",
@@ -591,7 +599,9 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                             Text(
                                                 text = progress.pageLabel,
                                                 style = MaterialTheme.typography.bodySmall,
-                                                color = colorScheme.secondary
+                                                color = colorScheme.secondary,
+                                                maxLines = 1,
+                                                softWrap = false
                                             )
                                         }
                                         Text(
@@ -1166,6 +1176,8 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         const val READY_TIMEOUT_MS = 3000L
     }
 
+    private val decorationMutex = Mutex()
+
     private var onToggleInterface: (() -> Unit)? = null
     private var onShowNoteDialog: ((Locator) -> Unit)? = null
     private var onShowReplyDialog: ((ReaderViewModel.NoteData) -> Unit)? = null
@@ -1269,6 +1281,9 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             }
             // Register decoration listener
             navigator?.addDecorationListener("highlights", this@ReaderFragment)
+            // Hand the navigator the annotations before any chapter has loaded, so it draws
+            // them itself as each chapter loads.
+            applyAnnotations(viewModel.highlights.value, viewModel.notes.value)
         }
 
         transaction.commit()
@@ -1309,8 +1324,17 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             )
         }
 
+        // Readium diffs each list against the previous one and the resulting changes must reach
+        // the page in order, so updates are applied strictly one at a time.
         lifecycleScope.launch {
-            navigator.applyDecorations(highlightDecorations + noteDecorations, "highlights")
+            decorationMutex.withLock {
+                try {
+                    navigator.applyDecorations(highlightDecorations + noteDecorations, "highlights")
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    Log.e("ReaderFragment", "Failed to apply annotations", e)
+                }
+            }
         }
     }
 
