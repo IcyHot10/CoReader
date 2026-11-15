@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.doOnLayout
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentFactory
 import androidx.lifecycle.Lifecycle
@@ -506,14 +507,20 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                         ViewGroup.LayoutParams.MATCH_PARENT,
                                         ViewGroup.LayoutParams.MATCH_PARENT
                                     )
-                                    post { isContainerReady = true }
+                                    // Create the navigator only once the container has its final
+                                    // size, so the EPUB is paginated exactly once.
+                                    doOnLayout { isContainerReady = true }
                                 }
                             },
                             update = { },
                             modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 5.dp)
                         )
 
-                        // Permanent Footer (Page/Chapter Info)
+                        // Permanent Footer (Page/Chapter Info).
+                        // It is always laid out, even while empty and hidden behind the
+                        // loader: it sits below the navigator container, so letting it
+                        // appear later would shrink the WebView and force Readium to
+                        // re-paginate the chapter on screen.
                         val footerText = remember(progress) {
                             if (progress.chapterLabel.isNotEmpty()) {
                                 "${progress.chapterLabel} • ${progress.pageLabel}"
@@ -522,18 +529,18 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                             }
                         }
 
-                        if (isBookReady && footerText.isNotEmpty()) {
-                            Text(
-                                text = footerText,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .windowInsetsPadding(WindowInsets.navigationBars)
-                                    .padding(vertical = 1.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = colorScheme.onBackground.copy(alpha = 0.5f),
-                                textAlign = TextAlign.Center
-                            )
-                        }
+                        Text(
+                            text = footerText.ifEmpty { " " },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .windowInsetsPadding(WindowInsets.navigationBars)
+                                .padding(vertical = 1.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colorScheme.onBackground.copy(alpha = 0.5f),
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
 
                     // UI Overlays (Top/Bottom bars)
@@ -1155,6 +1162,10 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         }
     }
 
+    private companion object {
+        const val READY_TIMEOUT_MS = 3000L
+    }
+
     private var onToggleInterface: (() -> Unit)? = null
     private var onShowNoteDialog: ((Locator) -> Unit)? = null
     private var onShowReplyDialog: ((ReaderViewModel.NoteData) -> Unit)? = null
@@ -1167,7 +1178,6 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         if (!viewModel.hasEverLoaded) {
             viewModel.setBookReady(false)
         }
-        hasInitialRecalculationDone = false
         val container = view?.findViewById<View>(R.id.reader_container)
         if (container == null) return
 
@@ -1262,6 +1272,15 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         }
 
         transaction.commit()
+
+        // Safety net: never leave the loader up if the navigator fails to report a page.
+        viewLifecycleOwner.lifecycleScope.launch {
+            kotlinx.coroutines.delay(READY_TIMEOUT_MS)
+            if (!viewModel.isBookReady.value) {
+                Log.w("ReaderFragment", "Ready-state timeout reached, forcing ready")
+                viewModel.setBookReady(true)
+            }
+        }
     }
 
     private fun showNoteInputDialog(locator: Locator) {
@@ -1343,72 +1362,18 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     override fun onPageChanged(pageIndex: Int, totalPages: Int, locator: Locator) {
         viewModel.updateProgress(pageIndex, totalPages, locator)
 
-        // Only hide the loading screen if we aren't ready yet.
-        // We no longer wait for totalPages > 1 specifically here,
-        // but we keep the delay to ensure the UI has updated its display.
+        // Readium only reports a page once the current resource is fully laid out and has been
+        // scrolled to the initial locator, so the first report means the page is settled.
         if (!viewModel.isBookReady.value) {
-            viewLifecycleOwner.lifecycleScope.launch {
-                kotlinx.coroutines.delay(200)
-                Log.d("ReaderFragment", "onPageChanged: Revealing book")
-                viewModel.setBookReady(true)
-            }
+            viewModel.setBookReady(true)
         }
     }
 
-    private var hasInitialRecalculationDone = false
-
     override fun onPageLoaded() {
         super.onPageLoaded()
-        
-        Log.d("ReaderFragment", "onPageLoaded called. hasInitialRecalculationDone: $hasInitialRecalculationDone")
 
-        // Re-apply annotations whenever a page is loaded to ensure they are visible
+        // Re-apply annotations whenever a resource is loaded to ensure they are visible
         applyAnnotations(viewModel.highlights.value, viewModel.notes.value)
-
-        // Only run this once per "open" to avoid infinite loops during page turns
-        if (hasInitialRecalculationDone) return
-
-        val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
-        val preferences = currentPreferences
-        
-        if (navigator != null && preferences != null) {
-            navigator.lifecycleScope.launch {
-                try {
-                    // Wait for the WebView to be fully interactive
-                    kotlinx.coroutines.delay(500)
-
-                    Log.d("ReaderFragment", "Forcing initial pagination recalculation via jump-refresh")
-                    
-                    // 1. Get current position
-                    val currentLocator = navigator.currentLocator.value
-                    
-                    // 2. Force a jump to the exact same position.
-                    navigator.go(currentLocator, animated = false)
-
-                    // 3. Re-submit preferences to trigger a layout pass
-                    navigator.submitPreferences(preferences)
-                    
-                    hasInitialRecalculationDone = true
-                } catch (e: Exception) {
-                    Log.e("ReaderFragment", "Error during initial pagination refresh", e)
-                    hasInitialRecalculationDone = true
-                    viewModel.setBookReady(true)
-                }
-            }
-        } else {
-            Log.d("ReaderFragment", "Navigator or preferences missing in onPageLoaded, using fallback")
-            hasInitialRecalculationDone = true
-            viewModel.setBookReady(true)
-        }
-        
-        // Universal safety: if we still aren't ready after 3 seconds, just show it
-        viewLifecycleOwner.lifecycleScope.launch {
-            kotlinx.coroutines.delay(3000)
-            if (!viewModel.isBookReady.value) {
-                Log.d("ReaderFragment", "Ready-state timeout reached, forcing ready")
-                viewModel.setBookReady(true)
-            }
-        }
     }
 
     override fun onExternalLinkActivated(url: AbsoluteUrl) {
