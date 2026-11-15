@@ -405,6 +405,13 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             }
         }
 
+        var pageCurl by remember { mutableStateOf(pageCurlEnabled) }
+        LaunchedEffect(pageCurl, colorScheme) {
+            pageCurlEnabled = pageCurl
+            pageTurnLayout?.curlEnabled = pageCurl
+            pageTurnLayout?.paperColor = colorScheme.background.toArgb()
+        }
+
         // Separately handle the toggle callback update
         LaunchedEffect(isInterfaceVisible) {
             onToggleInterface = {
@@ -522,12 +529,26 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                         // Navigator Container
                         AndroidViewBinding(
                             factory = { inflater, parent, attachToParent ->
-                                FrameLayout(inflater.context).apply {
-                                    id = R.id.reader_container
+                                PageTurnLayout(inflater.context).apply {
+                                    // The navigator lives in the inner container; this layer
+                                    // draws the page-turn effect over it.
+                                    content.id = R.id.reader_container
                                     layoutParams = ViewGroup.LayoutParams(
                                         ViewGroup.LayoutParams.MATCH_PARENT,
                                         ViewGroup.LayoutParams.MATCH_PARENT
                                     )
+                                    window = requireActivity().window
+                                    curlEnabled = pageCurlEnabled
+                                    paperColor = colorScheme.background.toArgb()
+                                    onMovePage = { forward ->
+                                        val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+                                        when {
+                                            navigator == null -> false
+                                            forward -> navigator.goForward(animated = false)
+                                            else -> navigator.goBackward(animated = false)
+                                        }
+                                    }
+                                    pageTurnLayout = this
                                     // Create the navigator only once the container has its final
                                     // size, so the EPUB is paginated exactly once.
                                     doOnLayout { isContainerReady = true }
@@ -887,6 +908,28 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                                         tint = colorScheme.secondary
                                                     )
                                                 }
+                                            }
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = "Page curl animation",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = colorScheme.secondary
+                                                )
+                                                Switch(
+                                                    checked = pageCurl,
+                                                    onCheckedChange = { pageCurl = it },
+                                                    colors = SwitchDefaults.colors(
+                                                        checkedThumbColor = Teal,
+                                                        checkedTrackColor = colorScheme.secondary,
+                                                        uncheckedThumbColor = colorScheme.secondary,
+                                                        uncheckedTrackColor = Teal,
+                                                        uncheckedBorderColor = colorScheme.secondary
+                                                    )
+                                                )
                                             }
                                             Spacer(modifier = Modifier.height(8.dp))
                                         }
@@ -1349,6 +1392,8 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
     private companion object {
         const val READY_TIMEOUT_MS = 3000L
+        const val READER_PREFS = "reader_prefs"
+        const val PREF_PAGE_CURL = "page_curl"
     }
 
     /** Black or white, whichever reads better on [background]. */
@@ -1541,6 +1586,35 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         return false
     }
 
+    private var pageTurnLayout: PageTurnLayout? = null
+
+    /** Whether pages turn with the paper-curl effect instead of the reader's plain slide. */
+    private var pageCurlEnabled: Boolean
+        get() = requireContext()
+            .getSharedPreferences(READER_PREFS, android.content.Context.MODE_PRIVATE)
+            .getBoolean(PREF_PAGE_CURL, true)
+        set(value) {
+            requireContext()
+                .getSharedPreferences(READER_PREFS, android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(PREF_PAGE_CURL, value)
+                .apply()
+        }
+
+    private fun turnPage(navigator: EpubNavigatorFragment, forward: Boolean) {
+        val layout = pageTurnLayout
+        when {
+            layout != null && layout.curlEnabled -> layout.turn(forward)
+            forward -> navigator.goForward(animated = true)
+            else -> navigator.goBackward(animated = true)
+        }
+    }
+
+    override fun onDestroyView() {
+        pageTurnLayout = null
+        super.onDestroyView()
+    }
+
     override fun onTap(event: TapEvent): Boolean {
         // Only process taps if the fragment is at least STARTED to avoid processing clicks
         // intended for other screens (like the Library) when this fragment is in the backstack.
@@ -1552,11 +1626,11 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
         return when {
             point.x < width * 0.3 -> {
-                navigator.goBackward(animated = true)
+                turnPage(navigator, forward = false)
                 true
             }
             point.x > width * 0.7 -> {
-                navigator.goForward(animated = true)
+                turnPage(navigator, forward = true)
                 true
             }
             else -> {
