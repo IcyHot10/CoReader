@@ -168,6 +168,13 @@ class GroupRepository(
         false
     }
 
+    /** Sets the colour [uid] is shown in to the rest of the group; members set only their own. */
+    suspend fun setMemberColour(code: String, uid: String, colour: String) {
+        FirestorePaths.group(db, code)
+            .update(FieldPath.of(FIELD_GROUP_MEMBERS, uid, "highlightColour"), colour)
+            .await()
+    }
+
     /**
      * Removes a member from the group, their progress bucket and their shared annotations,
      * deleting the group entirely once the last member leaves.

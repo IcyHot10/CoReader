@@ -10,6 +10,7 @@ import androidx.lifecycle.viewmodel.CreationExtras
 import com.indeavour.coreader.AppRoomDatabase
 import com.indeavour.coreader.model.firebase.AnnotationModel
 import com.indeavour.coreader.model.firebase.BookModel
+import com.indeavour.coreader.model.firebase.MemberColour
 import com.indeavour.coreader.model.firebase.ReplyModel
 import com.indeavour.coreader.model.firebase.UserModel
 import com.indeavour.coreader.model.room.ReadingActivity
@@ -34,6 +35,7 @@ import kotlinx.coroutines.tasks.await
 import org.readium.r2.shared.publication.Link
 import org.readium.r2.shared.publication.Locator
 import org.readium.r2.shared.publication.Publication
+import org.readium.r2.shared.publication.services.positions
 import java.io.File
 
 class ReaderViewModel(
@@ -161,6 +163,29 @@ class ReaderViewModel(
 
     private val _isAdmin = MutableStateFlow(false)
     val isAdmin: StateFlow<Boolean> = _isAdmin
+
+    /** Each group member's colour (ARGB), keyed by user id. Empty outside a group. */
+    private val _memberColours = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val memberColours: StateFlow<Map<String, Int>> = _memberColours
+
+    /** Whether the open book is being read with a group. */
+    private val _isGroupBook = MutableStateFlow(false)
+    val isGroupBook: StateFlow<Boolean> = _isGroupBook
+
+    /** Sets the colour the rest of the group sees this reader's initials on. */
+    fun setMyMemberColour(argb: Int) {
+        val uid = auth.currentUser?.uid ?: return
+        val groupId = loadedGroupId?.takeIf { it != NO_GROUP && it.isNotBlank() } ?: return
+        // Shown immediately; the group listener confirms it.
+        _memberColours.value = _memberColours.value + (uid to argb)
+        saveScope.launch {
+            try {
+                groups.setMemberColour(groupId, uid, MemberColour.encode(argb))
+            } catch (e: Exception) {
+                Log.e("ReaderViewModel", "Failed to save member colour", e)
+            }
+        }
+    }
 
     private var loadedBookId: Int? = null
     private var loadedGroupId: String? = NO_GROUP
@@ -415,14 +440,120 @@ class ReaderViewModel(
         // Update the initial locator so that if the fragment is recreated (e.g. theme change),
         // it stays on the current page.
         _initialLocator.value = locator
-        lastLocator = locator
+        currentLocator = locator
 
-        // Save progress to Room database on every page turn
+        // While the reader is only visiting another part of the book, the saved position stays
+        // where they were actually reading.
+        settleReturnPoint(progression.toDouble())
+        if (_returnLocator.value != null) return
+
+        lastLocator = locator
+        saveProgressionLocally(locator)
+    }
+
+    /** Saves the reading position to Room; done on every page turn. */
+    private fun saveProgressionLocally(locator: Locator) {
         viewModelScope.launch {
             val database = AppRoomDatabase.getDatabase(getApplication())
             val now = System.currentTimeMillis()
             database.bookDao().updateActiveBookProgression(locator.toJSON().toString(), now)
         }
+    }
+
+    // ------------------------------------------------------------ jumping around the book
+
+    /** Where the navigator is right now, which differs from [lastLocator] while visiting. */
+    private var currentLocator: Locator? = null
+
+    private val _returnLocator = MutableStateFlow<Locator?>(null)
+
+    /**
+     * The position the reader was at before jumping elsewhere (slider, note, table of contents),
+     * or null when they are simply reading. While set, it is what gets saved as their progress,
+     * so looking back at an old note never moves their place in the book.
+     */
+    val returnLocator: StateFlow<Locator?> = _returnLocator
+
+    /** Whether the return point lies ahead of where the jump landed; unknown until it lands. */
+    private var returnPointIsAhead: Boolean? = null
+
+    private var positions: List<Locator> = emptyList()
+
+    /**
+     * Call just before jumping away from the current page. The first jump sets the return point;
+     * further jumps keep it, so it always leads back to where reading actually stopped.
+     */
+    fun markReturnPoint(targetProgression: Double? = null) {
+        if (_returnLocator.value != null) {
+            // Another jump: work out afresh which way "back" is once it lands, so that jumping
+            // straight past the return point is not mistaken for having read back to it.
+            returnPointIsAhead = null
+            return
+        }
+        val from = currentLocator ?: lastLocator ?: return
+        val fromProgression = from.locations.totalProgression
+        if (targetProgression != null && fromProgression != null &&
+            kotlin.math.abs(targetProgression - fromProgression) < RETURN_POINT_TOLERANCE
+        ) {
+            return // Not going anywhere worth coming back from.
+        }
+        lastLocator = from
+        returnPointIsAhead = null
+        _returnLocator.value = from
+    }
+
+    /** The reader is heading back to the return point; normal progress saving resumes there. */
+    fun clearReturnPoint() {
+        _returnLocator.value = null
+        returnPointIsAhead = null
+    }
+
+    /** The reader chose to stay where they jumped to, so that becomes their position. */
+    fun dismissReturnPoint() {
+        clearReturnPoint()
+        currentLocator?.let {
+            lastLocator = it
+            saveProgressionLocally(it)
+        }
+    }
+
+    /** Drops the return point once the reader has read (or paged) their way back to it. */
+    private fun settleReturnPoint(current: Double) {
+        val target = _returnLocator.value?.locations?.totalProgression ?: return
+        val isAhead = returnPointIsAhead
+        if (isAhead == null) {
+            // Wait for the jump to land before deciding which way "back" is.
+            if (kotlin.math.abs(current - target) > RETURN_POINT_TOLERANCE) {
+                returnPointIsAhead = current < target
+            }
+            return
+        }
+        val reached = if (isAhead) {
+            current >= target - RETURN_POINT_TOLERANCE
+        } else {
+            current <= target + RETURN_POINT_TOLERANCE
+        }
+        if (reached) clearReturnPoint()
+    }
+
+    /** The position closest to [totalProgression] (0..1) through the whole book. */
+    fun locatorAt(totalProgression: Float): Locator? {
+        if (positions.isEmpty()) return null
+        val wanted = totalProgression.toDouble()
+        val found = positions.binarySearchBy(wanted) { it.locations.totalProgression ?: 0.0 }
+        if (found >= 0) return positions[found]
+        val after = (-found - 1).coerceIn(0, positions.lastIndex)
+        val before = (after - 1).coerceAtLeast(0)
+        val distanceAfter = kotlin.math.abs((positions[after].locations.totalProgression ?: 0.0) - wanted)
+        val distanceBefore = kotlin.math.abs((positions[before].locations.totalProgression ?: 0.0) - wanted)
+        return if (distanceBefore <= distanceAfter) positions[before] else positions[after]
+    }
+
+    /** Chapter name at [totalProgression], for previewing where the slider will land. */
+    fun chapterAt(totalProgression: Float): String {
+        val pub = _publication.value ?: return ""
+        val locator = locatorAt(totalProgression) ?: return ""
+        return chapterTitleFor(pub, locator)
     }
 
     private var chapterTitlesFor: Publication? = null
@@ -473,12 +604,14 @@ class ReaderViewModel(
      */
     fun saveProgressionToFirestore() {
         val pub = _publication.value ?: return
-        val locator = lastLocator ?: return
+        // A return point is where the reader really is in the book; see [returnLocator].
+        val locator = _returnLocator.value ?: lastLocator ?: return
         val uid = auth.currentUser?.uid ?: return
         val authorName = pub.metadata.authors.firstOrNull()?.name ?: UNKNOWN_AUTHOR
         val bookKey = bookKeyOf(pub)
         val progressionJson = locator.toJSON().toString()
-        val isCompletedNow = _progress.value.value >= COMPLETION_THRESHOLD
+        val savedProgress = locator.locations.totalProgression?.toFloat() ?: _progress.value.value
+        val isCompletedNow = savedProgress >= COMPLETION_THRESHOLD
         val now = System.currentTimeMillis()
 
         saveScope.launch {
@@ -578,6 +711,8 @@ class ReaderViewModel(
                 annotationsListener?.remove()
                 annotationsListener = null
                 _isAdmin.value = false
+                _memberColours.value = emptyMap()
+                _isGroupBook.value = resolvedGroupId != NO_GROUP
                 _publication.value = null
                 _isBookReady.value = false
                 hasEverLoaded = false
@@ -586,12 +721,19 @@ class ReaderViewModel(
                 _highlights.value = emptyList()
                 _notes.value = emptyList()
                 _groupProgress.value = emptyList()
+                clearReturnPoint()
+                currentLocator = null
+                positions = emptyList()
                 loadedGroupId = resolvedGroupId
 
                 // Start listening to group info if in a group
                 if (resolvedGroupId != NO_GROUP) {
                     groupInfoListener = groups.listenGroup(resolvedGroupId) { group ->
                         _isAdmin.value = group?.groupMembers?.get(uid)?.admin == true
+                        _memberColours.value = group?.groupMembers.orEmpty()
+                            .mapValues { (memberId, member) ->
+                                MemberColour.resolve(memberId, member.highlightColour)
+                            }
                     }
                 }
             } else if (_publication.value != null) {
@@ -867,6 +1009,14 @@ class ReaderViewModel(
                     _initialLocator.value = locator
                     lastLocator = locator
                     _publication.value = pub
+
+                    // Used to turn a slider position into a place in the book.
+                    positions = try {
+                        pub.positions()
+                    } catch (e: Exception) {
+                        Log.e("ReaderViewModel", "Failed to compute positions", e)
+                        emptyList()
+                    }
                 }.onFailure {
                     Log.e("ReaderViewModel", "Failed to open book", it)
                     _error.value = it.message
@@ -881,6 +1031,7 @@ class ReaderViewModel(
         private const val UNTITLED_BOOK = "Untitled Book"
         private const val COMPLETION_THRESHOLD = 0.995f
         private const val MAX_SECONDS_PER_PAGE = 300L
+        private const val RETURN_POINT_TOLERANCE = 0.0005
 
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")

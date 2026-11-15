@@ -22,6 +22,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.StickyNote2
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.BrightnessHigh
@@ -38,6 +39,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.font.FontWeight
@@ -57,6 +59,7 @@ import com.indeavour.coreader.ui.theme.CoReaderTheme
 import com.indeavour.coreader.ui.theme.Teal
 import com.indeavour.coreader.viewmodel.ReaderViewModel
 import com.google.firebase.auth.FirebaseAuth
+import com.indeavour.coreader.model.firebase.MemberColour
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -161,6 +164,9 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         val progress by viewModel.progress.collectAsState()
         val groupProgress by viewModel.groupProgress.collectAsState()
         val remoteProgression by viewModel.remoteProgression.collectAsState()
+        val returnLocator by viewModel.returnLocator.collectAsState()
+        val memberColours by viewModel.memberColours.collectAsState()
+        val isGroupBook by viewModel.isGroupBook.collectAsState()
         val isBookReady by viewModel.isBookReady.collectAsState()
         val isAdmin by viewModel.isAdmin.collectAsState()
         val usernames by viewModel.usernames.collectAsState()
@@ -170,6 +176,14 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
         var isContainerReady by remember { mutableStateOf(false) }
+
+        // Position of the progress slider while it is being dragged (and until the jump it
+        // caused has landed); null when it simply mirrors the reading position.
+        var sliderValue by remember { mutableStateOf<Float?>(null) }
+        var isDraggingSlider by remember { mutableStateOf(false) }
+        LaunchedEffect(progress.value) {
+            if (!isDraggingSlider) sliderValue = null
+        }
 
         var isSyncDismissed by remember { mutableStateOf(false) }
         LaunchedEffect(remoteProgression) {
@@ -243,14 +257,14 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             var replyText by remember { mutableStateOf("") }
             val note = replyingToNote!!
             val username = viewModel.usernames.collectAsState().value[note.userId] ?: "Unknown User"
-            
+
             AlertDialog(
                 onDismissRequest = { replyingToNote = null },
                 title = { Text("Note by $username", color = MaterialTheme.colorScheme.secondary) },
                 text = {
                     Column {
                         Text(note.content, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
-                        
+
                         if (note.replies.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))
                             Text("Replies:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.7f))
@@ -259,7 +273,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                     val replierName = viewModel.usernames.collectAsState().value[reply.userId] ?: "Unknown"
                                     val currentUserId = FirebaseAuth.getInstance().currentUser?.uid
                                     val isAdmin by viewModel.isAdmin.collectAsState()
-                                    
+
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -297,7 +311,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                 }
                             }
                         }
-                        
+
                         Spacer(Modifier.height(16.dp))
                         TextField(
                             value = replyText,
@@ -336,7 +350,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         }
 
         val colorScheme = MaterialTheme.colorScheme
-        
+
         // Update Readium configuration when publication changes, but only if navigator is missing
         LaunchedEffect(publication, isContainerReady) {
             if (isContainerReady && publication != null) {
@@ -365,7 +379,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                 navigator.submitPreferences(updatedPreferences)
             }
         }
-        
+
         // Handle theme changes separately to avoid recreating the navigator
         LaunchedEffect(colorScheme) {
             val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
@@ -377,7 +391,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     "light" -> Theme.LIGHT
                     else -> if (colorScheme.background.toArgb() == android.graphics.Color.BLACK) Theme.DARK else Theme.LIGHT
                 }
-                
+
                 val preferences = (currentPreferences ?: EpubPreferences()).copy(
                     theme = theme,
                     backgroundColor = PreferenceColor(colorScheme.background.toArgb()),
@@ -385,12 +399,12 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                 )
                 currentPreferences = preferences
                 navigator.submitPreferences(preferences)
-                
+
                 // Update background of the container view as well
                 view?.findViewById<View>(R.id.reader_container)?.setBackgroundColor(colorScheme.background.toArgb())
             }
         }
-        
+
         // Separately handle the toggle callback update
         LaunchedEffect(isInterfaceVisible) {
             onToggleInterface = {
@@ -426,17 +440,18 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
                         publication?.tableOfContents?.let { toc ->
                             items(toc) { link ->
-                                val membersInChapter = groupProgress.filter { 
+                                val membersInChapter = groupProgress.filter {
                                     // link.url() and it.locator.href are both Readium Url objects
-                                    it.locator.href == link.url() || 
+                                    it.locator.href == link.url() ||
                                     it.locator.href.toString().substringBefore("#") == link.url().toString().substringBefore("#")
                                 }
-                                
+
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable {
                                             val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+                                            viewModel.markReturnPoint()
                                             navigator?.go(link, animated = true)
                                             scope.launch { drawerState.close() }
                                             isInterfaceVisible = false
@@ -454,26 +469,30 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                             style = MaterialTheme.typography.bodyLarge,
                                             color = colorScheme.secondary
                                         )
-                                        
+
                                         if (membersInChapter.isNotEmpty()) {
                                             Row(
                                                 horizontalArrangement = Arrangement.End,
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
                                                 membersInChapter.forEach { member ->
+                                                    val memberColour = androidx.compose.ui.graphics.Color(
+                                                        memberColours[member.userId]
+                                                            ?: MemberColour.resolve(member.userId, null)
+                                                    )
                                                     Surface(
                                                         modifier = Modifier.size(24.dp),
                                                         shape = CircleShape,
-                                                        color = colorScheme.secondary
+                                                        color = memberColour
                                                     ) {
                                                         Box(contentAlignment = Alignment.Center) {
                                                             Text(
-                                                                text = member.username.take(1).uppercase().ifEmpty { "?" },
+                                                                text = MemberColour.initials(member.username),
                                                                 style = MaterialTheme.typography.labelSmall.copy(
-                                                                    fontSize = 12.sp,
+                                                                    fontSize = 10.sp,
                                                                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
                                                                 ),
-                                                                color = Teal // Contrasts with colorScheme.secondary which is likely light
+                                                                color = readableOn(memberColour)
                                                             )
                                                         }
                                                     }
@@ -571,7 +590,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                             .background(colorScheme.secondary.copy(alpha = 0.2f))
                                     )
                                     Spacer(modifier = Modifier.height(8.dp))
-                                    
+
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -581,43 +600,145 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                             modifier = Modifier.weight(1f).padding(end = 12.dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            if (progress.chapterLabel.isNotEmpty()) {
+                                            // While dragging, preview where the slider would land.
+                                            val previewValue = sliderValue
+                                            val chapterText = if (previewValue != null) {
+                                                remember(previewValue) { viewModel.chapterAt(previewValue) }
+                                            } else {
+                                                progress.chapterLabel
+                                            }
+                                            if (chapterText.isNotEmpty()) {
                                                 Text(
-                                                    text = progress.chapterLabel,
+                                                    text = chapterText,
                                                     modifier = Modifier.weight(1f, fill = false),
                                                     style = MaterialTheme.typography.labelSmall,
                                                     color = colorScheme.secondary,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
+                                                if (previewValue == null) {
+                                                    Text(
+                                                        text = " • ",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = colorScheme.secondary.copy(alpha = 0.6f)
+                                                    )
+                                                }
+                                            }
+                                            if (previewValue == null) {
                                                 Text(
-                                                    text = " • ",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = colorScheme.secondary.copy(alpha = 0.6f)
+                                                    text = progress.pageLabel,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = colorScheme.secondary,
+                                                    maxLines = 1,
+                                                    softWrap = false
                                                 )
                                             }
-                                            Text(
-                                                text = progress.pageLabel,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = colorScheme.secondary,
-                                                maxLines = 1,
-                                                softWrap = false
-                                            )
                                         }
                                         Text(
-                                            text = progress.percentageLabel,
+                                            text = sliderValue
+                                                ?.let { "${kotlin.math.round(it * 100).toInt()}%" }
+                                                ?: progress.percentageLabel,
                                             style = MaterialTheme.typography.bodySmall,
                                             color = colorScheme.secondary
                                         )
                                     }
-                                    
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    
-                                    LinearProgressIndicator(
-                                        progress = { progress.value },
+
+                                    // Where the other group members reading this book have got to,
+                                    // lined up with the slider below.
+                                    val ownUid = remember { FirebaseAuth.getInstance().currentUser?.uid }
+                                    val otherReaders = remember(groupProgress, ownUid) {
+                                        groupProgress.mapNotNull { member ->
+                                            val position = member.locator.locations.totalProgression
+                                            if (member.userId == ownUid || position == null) null
+                                            else member to position.toFloat().coerceIn(0f, 1f)
+                                        }
+                                    }
+                                    if (otherReaders.isNotEmpty()) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(30.dp)) {
+                                            val bubble = 24.dp
+                                            // The slider's track stops half a thumb short of each edge.
+                                            val trackInset = 2.dp
+                                            val trackWidth = maxWidth - trackInset * 2
+                                            otherReaders.forEach { (member, position) ->
+                                                val name = member.username.ifBlank { "A group member" }
+                                                val x = (trackInset + trackWidth * position - bubble / 2)
+                                                    .coerceIn(0.dp, maxWidth - bubble)
+                                                Column(
+                                                    modifier = Modifier
+                                                        .offset(x = x)
+                                                        .width(bubble)
+                                                        .clickable {
+                                                            android.widget.Toast.makeText(
+                                                                requireContext(),
+                                                                "$name is at ${kotlin.math.round(position * 100).toInt()}%",
+                                                                android.widget.Toast.LENGTH_SHORT
+                                                            ).show()
+                                                        },
+                                                    horizontalAlignment = Alignment.CenterHorizontally
+                                                ) {
+                                                    val memberColour = androidx.compose.ui.graphics.Color(
+                                                        memberColours[member.userId]
+                                                            ?: MemberColour.resolve(member.userId, null)
+                                                    )
+                                                    Surface(
+                                                        modifier = Modifier.size(bubble),
+                                                        shape = CircleShape,
+                                                        color = memberColour
+                                                    ) {
+                                                        Box(contentAlignment = Alignment.Center) {
+                                                            Text(
+                                                                text = MemberColour.initials(member.username),
+                                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                                    fontSize = 10.sp,
+                                                                    fontWeight = FontWeight.Bold
+                                                                ),
+                                                                color = readableOn(memberColour)
+                                                            )
+                                                        }
+                                                    }
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .width(2.dp)
+                                                            .height(6.dp)
+                                                            .background(memberColour)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Drag to move through the book; the jump happens on release.
+                                    Slider(
+                                        value = (sliderValue ?: progress.value).coerceIn(0f, 1f),
+                                        onValueChange = {
+                                            isDraggingSlider = true
+                                            sliderValue = it
+                                        },
+                                        onValueChangeFinished = {
+                                            isDraggingSlider = false
+                                            val target = sliderValue
+                                            val locator = target?.let { viewModel.locatorAt(it) }
+                                            val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+                                            if (locator != null && navigator != null) {
+                                                viewModel.markReturnPoint(locator.locations.totalProgression)
+                                                navigator.go(locator, animated = false)
+                                                // The thumb stays put until the new page reports in;
+                                                // this covers a jump that lands on the same page.
+                                                scope.launch {
+                                                    kotlinx.coroutines.delay(1500)
+                                                    if (!isDraggingSlider) sliderValue = null
+                                                }
+                                            } else {
+                                                sliderValue = null
+                                            }
+                                        },
                                         modifier = Modifier.fillMaxWidth(),
-                                        color = colorScheme.secondary,
-                                        trackColor = colorScheme.secondary.copy(alpha = 0.2f),
+                                        colors = SliderDefaults.colors(
+                                            thumbColor = colorScheme.secondary,
+                                            activeTrackColor = colorScheme.secondary,
+                                            inactiveTrackColor = colorScheme.secondary.copy(alpha = 0.2f)
+                                        )
                                     )
 
                                     Row(
@@ -676,6 +797,44 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                                             )
                                                     )
                                                 }
+                                            }
+                                            if (isGroupBook) {
+                                                // The colour the rest of the group sees this
+                                                // reader's initials on.
+                                                val myUid = remember { FirebaseAuth.getInstance().currentUser?.uid }
+                                                val myColour = myUid?.let { memberColours[it] }
+                                                Spacer(modifier = Modifier.height(8.dp))
+                                                Text(
+                                                    text = "Your colour in this group",
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = colorScheme.secondary.copy(alpha = 0.7f),
+                                                    textAlign = TextAlign.Center
+                                                )
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.Center,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    MemberColour.PALETTE.forEach { option ->
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .size(36.dp)
+                                                                .padding(4.dp)
+                                                                .background(
+                                                                    color = androidx.compose.ui.graphics.Color(option),
+                                                                    shape = CircleShape
+                                                                )
+                                                                .clickable { viewModel.setMyMemberColour(option) }
+                                                                .then(
+                                                                    if (myColour == option) {
+                                                                        Modifier.border(2.dp, colorScheme.secondary, CircleShape)
+                                                                    } else Modifier
+                                                                )
+                                                        )
+                                                    }
+                                                }
+                                                Spacer(modifier = Modifier.height(8.dp))
                                             }
                                             Row(
                                                 modifier = Modifier.fillMaxWidth(),
@@ -756,7 +915,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                         .padding(horizontal = 4.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    IconButton(onClick = { 
+                                    IconButton(onClick = {
                                         scope.launch { drawerState.open() }
                                     }) {
                                         Icon(
@@ -779,7 +938,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                             overflow = TextOverflow.Ellipsis
                                         )
                                     }
-                                    IconButton(onClick = { 
+                                    IconButton(onClick = {
                                         showNotesSheet = true
                                     }) {
                                         Icon(
@@ -793,55 +952,70 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                         }
                     }
 
-                    // Sync Progression Button
+                    // Jump-back button. After jumping around the book it returns to the page the
+                    // reader was on; otherwise it offers newer progress from another device.
+                    val canReturn = returnLocator != null
                     AnimatedVisibility(
-                        visible = showSyncButton && isBookReady,
+                        visible = (canReturn || showSyncButton) && isBookReady,
                         enter = slideInVertically(initialOffsetY = { -it }),
                         exit = slideOutVertically(targetOffsetY = { -it }),
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .padding(top = 80.dp)
                     ) {
-                        val dismissState = rememberSwipeToDismissBoxState(
-                            confirmValueChange = {
-                                if (it != SwipeToDismissBoxValue.Settled) {
-                                    isSyncDismissed = true
-                                    true
-                                } else {
-                                    false
-                                }
-                            }
-                        )
-
-                        SwipeToDismissBox(
-                            state = dismissState,
-                            backgroundContent = {},
-                            content = {
-                                Button(
-                                    onClick = {
-                                        remoteProgression?.let { locator ->
-                                            val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
-                                            navigator?.go(locator, animated = true)
+                        // Keyed so that swiping one button away does not leave the other hidden.
+                        key(canReturn) {
+                            val dismissState = rememberSwipeToDismissBoxState(
+                                confirmValueChange = {
+                                    if (it != SwipeToDismissBoxValue.Settled) {
+                                        if (canReturn) {
+                                            viewModel.dismissReturnPoint()
+                                        } else {
+                                            isSyncDismissed = true
                                         }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = Teal,
-                                        contentColor = colorScheme.secondary
-                                    ),
-                                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Default.CloudDownload,
-                                            contentDescription = "Sync",
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(Modifier.width(8.dp))
-                                        Text("Jump to cloud progress")
+                                        true
+                                    } else {
+                                        false
                                     }
                                 }
-                            }
-                        )
+                            )
+
+                            SwipeToDismissBox(
+                                state = dismissState,
+                                backgroundContent = {},
+                                content = {
+                                    Button(
+                                        onClick = {
+                                            val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+                                            val target = returnLocator ?: remoteProgression
+                                            if (navigator != null && target != null) {
+                                                if (canReturn) viewModel.clearReturnPoint()
+                                                navigator.go(target, animated = true)
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Teal,
+                                            contentColor = colorScheme.secondary
+                                        ),
+                                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = if (canReturn) {
+                                                    Icons.AutoMirrored.Filled.Undo
+                                                } else {
+                                                    Icons.Default.CloudDownload
+                                                },
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(Modifier.width(8.dp))
+                                            Text(if (canReturn) "Back to where you were" else "Jump to cloud progress")
+                                        }
+                                    }
+                                }
+                            )
+                        }
                     }
 
                     // Loading Screen Overlay
@@ -879,6 +1053,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                 onClose = { showNotesSheet = false },
                 onNavigate = { locator ->
                     val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment
+                    viewModel.markReturnPoint(locator.locations.totalProgression)
                     navigator?.go(locator, animated = true)
                     showNotesSheet = false
                     isInterfaceVisible = false
@@ -935,10 +1110,10 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     style = MaterialTheme.typography.titleLarge,
                     color = colorScheme.secondary
                 )
-                
+
                 val items = remember(notes, highlights) {
-                    (notes.map { it as Any } + highlights.map { it as Any }).sortedBy { 
-                        (it as? ReaderViewModel.NoteData)?.locator?.locations?.totalProgression ?: 
+                    (notes.map { it as Any } + highlights.map { it as Any }).sortedBy {
+                        (it as? ReaderViewModel.NoteData)?.locator?.locations?.totalProgression ?:
                         (it as? ReaderViewModel.HighlightData)?.locator?.locations?.totalProgression ?: 0.0
                     }
                 }
@@ -1031,7 +1206,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                
+
                 if (note.replies.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(8.dp))
                     note.replies.forEach { reply ->
@@ -1073,7 +1248,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     }
                 }
             }
-            
+
             Row {
                 IconButton(onClick = { onReply(note) }) {
                     Icon(
@@ -1176,6 +1351,14 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         const val READY_TIMEOUT_MS = 3000L
     }
 
+    /** Black or white, whichever reads better on [background]. */
+    private fun readableOn(background: androidx.compose.ui.graphics.Color): androidx.compose.ui.graphics.Color =
+        if (background.luminance() > 0.5f) {
+            androidx.compose.ui.graphics.Color.Black
+        } else {
+            androidx.compose.ui.graphics.Color.White
+        }
+
     private val decorationMutex = Mutex()
 
     private var onToggleInterface: (() -> Unit)? = null
@@ -1197,7 +1380,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             "dark" -> Theme.DARK
             "sepia" -> Theme.SEPIA
             "light" -> Theme.LIGHT
-            else -> if (colorScheme?.background?.toArgb() == Color.BLACK || 
+            else -> if (colorScheme?.background?.toArgb() == Color.BLACK ||
                 (colorScheme?.background?.toArgb() ?: 0) < 0xFF444444.toInt()) {
                 Theme.DARK
             } else {
@@ -1305,7 +1488,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     private fun applyAnnotations(highlights: List<ReaderViewModel.HighlightData>, notes: List<ReaderViewModel.NoteData>) {
         val navigator = childFragmentManager.findFragmentByTag("navigator") as? DecorableNavigator ?: return
         Log.d("ReaderFragment", "Applying ${highlights.size} highlights and ${notes.size} notes to navigator")
-        
+
         val highlightDecorations = highlights.map { data ->
             Decoration(
                 id = "highlight-${data.id}",
@@ -1343,7 +1526,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             val userId = event.decoration.extras["userId"] as? String
             val type = event.decoration.extras["type"] as? String
             val content = event.decoration.extras["content"] as? String
-            
+
             if (userId != null) {
                 val username = viewModel.usernames.value[userId] ?: "Unknown User"
                 val message = if (type == "note" && content != null) {
@@ -1359,14 +1542,14 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     }
 
     override fun onTap(event: TapEvent): Boolean {
-        // Only process taps if the fragment is at least STARTED to avoid processing clicks 
+        // Only process taps if the fragment is at least STARTED to avoid processing clicks
         // intended for other screens (like the Library) when this fragment is in the backstack.
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return false
 
         val point = event.point
         val navigator = childFragmentManager.findFragmentByTag("navigator") as? EpubNavigatorFragment ?: return false
         val width = view?.width ?: return false
-        
+
         return when {
             point.x < width * 0.3 -> {
                 navigator.goBackward(animated = true)
