@@ -21,8 +21,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.StickyNote2
 import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.BrightnessHigh
@@ -59,6 +61,7 @@ import com.indeavour.coreader.ui.theme.CoReaderTheme
 import com.indeavour.coreader.ui.theme.Teal
 import com.indeavour.coreader.viewmodel.ReaderViewModel
 import com.google.firebase.auth.FirebaseAuth
+import com.indeavour.coreader.domain.QuestionStage
 import com.indeavour.coreader.model.firebase.MemberColour
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -173,6 +176,8 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         var isInterfaceVisible by remember { mutableStateOf(false) }
         var isColorPickerExpanded by remember { mutableStateOf(false) }
         var showNotesSheet by remember { mutableStateOf(false) }
+        var showAskSheet by remember { mutableStateOf(false) }
+        val bookChat by viewModel.bookChat.collectAsState()
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
         var isContainerReady by remember { mutableStateOf(false) }
@@ -981,6 +986,13 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                             overflow = TextOverflow.Ellipsis
                                         )
                                     }
+                                    IconButton(onClick = { showAskSheet = true }) {
+                                        Icon(
+                                            imageVector = Icons.Default.AutoAwesome,
+                                            contentDescription = "Ask about this book",
+                                            tint = colorScheme.secondary
+                                        )
+                                    }
                                     IconButton(onClick = {
                                         showNotesSheet = true
                                     }) {
@@ -1087,6 +1099,16 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             }
         }
 
+        if (showAskSheet) {
+            AskBookSheet(
+                entries = bookChat,
+                onAsk = { viewModel.askAboutBook(it) },
+                onSpoilerChoice = { id, withSpoilers -> viewModel.chooseSpoilers(id, withSpoilers) },
+                onClose = { showAskSheet = false },
+                colorScheme = colorScheme
+            )
+        }
+
         if (showNotesSheet) {
             NotesAndHighlightsSheet(
                 notes = notes,
@@ -1123,6 +1145,191 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             update = update,
             modifier = modifier
         )
+    }
+
+    /** Questions to the assistant about the open book, and its spoiler-checked answers. */
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun AskBookSheet(
+        entries: List<ReaderViewModel.BookChatEntry>,
+        onAsk: (String) -> Unit,
+        onSpoilerChoice: (Long, Boolean) -> Unit,
+        onClose: () -> Unit,
+        colorScheme: ColorScheme
+    ) {
+        var question by remember { mutableStateOf("") }
+        val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+        val isBusy = entries.lastOrNull()?.state is ReaderViewModel.BookChatState.Working
+
+        // Keep the newest question and its answer in view.
+        LaunchedEffect(entries.size, entries.lastOrNull()?.state) {
+            if (entries.isNotEmpty()) listState.animateScrollToItem(entries.lastIndex)
+        }
+
+        ModalBottomSheet(
+            onDismissRequest = onClose,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = Teal,
+            contentColor = colorScheme.secondary
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.85f)
+                    .imePadding()
+                    .padding(horizontal = 16.dp)
+            ) {
+                Text(
+                    "Ask about this book",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = colorScheme.secondary
+                )
+                Text(
+                    "Answers are checked against the book's text, and so they don't give away anything past where you are.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colorScheme.secondary.copy(alpha = 0.7f)
+                )
+                Spacer(Modifier.height(8.dp))
+
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    state = listState,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    if (entries.isEmpty()) {
+                        item {
+                            Text(
+                                "Try \"Who is this character again?\" or \"What does this word mean here?\"",
+                                modifier = Modifier.padding(top = 24.dp),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colorScheme.secondary.copy(alpha = 0.6f)
+                            )
+                        }
+                    }
+                    items(entries, key = { it.id }) { entry ->
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            // The question, set to the right like a sent message.
+                            Surface(
+                                modifier = Modifier.align(Alignment.End).padding(start = 48.dp),
+                                shape = MaterialTheme.shapes.medium,
+                                color = colorScheme.secondary.copy(alpha = 0.18f)
+                            ) {
+                                Text(
+                                    entry.question,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = colorScheme.secondary
+                                )
+                            }
+                            Spacer(Modifier.height(6.dp))
+
+                            when (val state = entry.state) {
+                                is ReaderViewModel.BookChatState.Working -> Row(
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        color = colorScheme.secondary,
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        when (state.stage) {
+                                            QuestionStage.ANSWERING -> "Thinking…"
+                                            QuestionStage.CHECKING -> "Checking the answer…"
+                                            QuestionStage.REVISING -> "Improving the answer…"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colorScheme.secondary.copy(alpha = 0.7f)
+                                    )
+                                }
+
+                                is ReaderViewModel.BookChatState.Answered -> {
+                                    Text(
+                                        state.text,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = colorScheme.secondary
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        buildString {
+                                            append(if (state.containsSpoilers) "Contains spoilers" else "Spoiler-free")
+                                            append(if (state.verified) " • checked" else " • couldn't be verified")
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = colorScheme.secondary.copy(alpha = 0.6f)
+                                    )
+                                }
+
+                                ReaderViewModel.BookChatState.SpoilerChoice -> {
+                                    Text(
+                                        "This can't be answered properly without giving away what happens later. Do you want the answer anyway?",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = colorScheme.secondary
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(
+                                            onClick = { onSpoilerChoice(entry.id, false) },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = colorScheme.secondary,
+                                                contentColor = Teal
+                                            )
+                                        ) { Text("No spoilers") }
+                                        OutlinedButton(
+                                            onClick = { onSpoilerChoice(entry.id, true) },
+                                            colors = ButtonDefaults.outlinedButtonColors(
+                                                contentColor = colorScheme.secondary
+                                            )
+                                        ) { Text("Show spoilers") }
+                                    }
+                                }
+
+                                is ReaderViewModel.BookChatState.Failed -> Text(
+                                    state.message,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colorScheme.secondary.copy(alpha = 0.7f)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextField(
+                        value = question,
+                        onValueChange = { question = it },
+                        placeholder = { Text("Ask a question…") },
+                        modifier = Modifier.weight(1f),
+                        maxLines = 3,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surface,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                            focusedIndicatorColor = Teal,
+                            cursorColor = Teal
+                        )
+                    )
+                    IconButton(
+                        enabled = question.isNotBlank() && !isBusy,
+                        onClick = {
+                            onAsk(question)
+                            question = ""
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Ask",
+                            tint = colorScheme.secondary.copy(
+                                alpha = if (question.isNotBlank() && !isBusy) 1f else 0.4f
+                            )
+                        )
+                    }
+                }
+            }
+        }
     }
 
     @OptIn(ExperimentalMaterial3Api::class)

@@ -8,7 +8,19 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.indeavour.coreader.AppRoomDatabase
+import com.indeavour.coreader.domain.BookQuestionPipeline
+import com.indeavour.coreader.domain.BookText
+import com.indeavour.coreader.domain.ChapterText
 import com.indeavour.coreader.domain.ChapterTitles
+import com.indeavour.coreader.domain.Exchange
+import com.indeavour.coreader.domain.Passage
+import com.indeavour.coreader.domain.PassageSearch
+import com.indeavour.coreader.domain.QuestionResult
+import com.indeavour.coreader.domain.QuestionStage
+import com.indeavour.coreader.domain.ReadingContext
+import com.indeavour.coreader.domain.SpoilerPolicy
+import com.indeavour.coreader.model.ai.AgentException
+import com.indeavour.coreader.model.ai.BookQuestionAgent
 import com.indeavour.coreader.domain.ProgressLookup
 import com.indeavour.coreader.domain.ReadingSessionTimer
 import com.indeavour.coreader.domain.ReadingStatsCalculator
@@ -36,12 +48,16 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.tasks.await
 import org.readium.r2.shared.publication.Link
 import org.readium.r2.shared.publication.Locator
 import org.readium.r2.shared.publication.Publication
 import org.readium.r2.shared.publication.services.positions
+import org.readium.r2.shared.util.mediatype.MediaType
 import java.io.File
 
 class ReaderViewModel(
@@ -192,6 +208,195 @@ class ReaderViewModel(
             }
         }
     }
+
+    // ------------------------------------------------------------ asking about the book
+
+    sealed interface BookChatState {
+        data class Working(val stage: QuestionStage) : BookChatState
+        data class Answered(
+            val text: String,
+            val containsSpoilers: Boolean,
+            val verified: Boolean
+        ) : BookChatState
+
+        /** Only a spoiler answers the question; waiting for the reader to choose. */
+        data object SpoilerChoice : BookChatState
+        data class Failed(val message: String) : BookChatState
+    }
+
+    data class BookChatEntry(val id: Long, val question: String, val state: BookChatState)
+
+    /** Questions asked about the open book this session, oldest first. */
+    private val _bookChat = MutableStateFlow<List<BookChatEntry>>(emptyList())
+    val bookChat: StateFlow<List<BookChatEntry>> = _bookChat
+
+    private var nextChatId = 0L
+
+    // Created on first use: most reading sessions never ask anything.
+    private val questionPipeline by lazy {
+        val agent = BookQuestionAgent()
+        BookQuestionPipeline(answer = agent::answer, review = agent::review, evidence = ::findPassages)
+    }
+
+    /** The whole book as plain text, one entry per file in reading order; read on first use. */
+    private var bookText: List<ChapterText>? = null
+    private var bookTextFor: Publication? = null
+
+    private suspend fun loadBookText(pub: Publication): List<ChapterText> {
+        bookText?.takeIf { bookTextFor === pub }?.let { return it }
+        // Makes sure the chapter titles for this book are worked out.
+        pub.readingOrder.firstOrNull()?.let { first ->
+            chapterTitleFor(pub, Locator(href = first.url(), mediaType = first.mediaType ?: MediaType.XHTML))
+        }
+        val titles = chapterTitles
+        val loaded = withContext(Dispatchers.IO) {
+            pub.readingOrder.mapIndexed { index, link ->
+                val html = try {
+                    pub.get(link)?.read()?.getOrNull()?.toString(Charsets.UTF_8)
+                } catch (e: Exception) {
+                    Log.e("ReaderViewModel", "Failed to read ${link.href}", e)
+                    null
+                }
+                ChapterText(titles.getOrNull(index).orEmpty(), html?.let { BookText.fromHtml(it) }.orEmpty())
+            }
+        }
+        bookText = loaded
+        bookTextFor = pub
+        return loaded
+    }
+
+    /**
+     * Searches the book's own text for passages about [query]. Unless the reader asked for
+     * spoilers, only the part they have already read is searched, so the evidence itself can
+     * never give anything away.
+     */
+    private suspend fun findPassages(query: String, policy: SpoilerPolicy): List<Passage> {
+        val pub = _publication.value ?: return emptyList()
+        return try {
+            val chapters = loadBookText(pub)
+            val searchable = if (policy == SpoilerPolicy.SPOILERS_ALLOWED) {
+                chapters
+            } else {
+                val locator = _returnLocator.value ?: currentLocator ?: lastLocator
+                val key = locator?.let { ChapterTitles.resourceKey(it.href.toString()) }
+                val current = pub.readingOrder.indexOfFirst {
+                    ChapterTitles.resourceKey(it.url().toString()) == key
+                }
+                if (current < 0) {
+                    emptyList()
+                } else {
+                    val progression = (locator?.locations?.progression ?: 0.0).coerceIn(0.0, 1.0)
+                    val reading = chapters[current]
+                    chapters.take(current) +
+                        reading.copy(text = reading.text.take((reading.text.length * progression).toInt()))
+                }
+            }
+            withContext(Dispatchers.Default) { PassageSearch.find(searchable, query) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("ReaderViewModel", "Failed to search the book's text", e)
+            emptyList()
+        }
+    }
+
+    /** Asks a question about the open book; the answer is kept free of spoilers. */
+    fun askAboutBook(question: String) {
+        val text = question.trim()
+        if (text.isEmpty()) return
+        val id = nextChatId++
+        _bookChat.value = _bookChat.value +
+            BookChatEntry(id, text, BookChatState.Working(QuestionStage.ANSWERING))
+        runQuestion(id, text, SpoilerPolicy.NO_SPOILERS)
+    }
+
+    /** The reader's answer to "this needs spoilers: do you want them?". */
+    fun chooseSpoilers(id: Long, withSpoilers: Boolean) {
+        val entry = _bookChat.value.firstOrNull { it.id == id } ?: return
+        if (entry.state !is BookChatState.SpoilerChoice) return
+        setChatState(id, BookChatState.Working(QuestionStage.ANSWERING))
+        runQuestion(
+            id,
+            entry.question,
+            if (withSpoilers) SpoilerPolicy.SPOILERS_ALLOWED else SpoilerPolicy.NO_SPOILERS_BEST_EFFORT
+        )
+    }
+
+    private fun setChatState(id: Long, state: BookChatState) {
+        _bookChat.value = _bookChat.value.map { if (it.id == id) it.copy(state = state) else it }
+    }
+
+    private fun runQuestion(id: Long, question: String, policy: SpoilerPolicy) {
+        viewModelScope.launch {
+            val state = try {
+                val context = readingContext()
+                    ?: throw AgentException("Open a book before asking about it")
+                // Everything already answered above this question, so a follow-up such as
+                // "is she dead?" is understood.
+                val history = _bookChat.value
+                    .takeWhile { it.id != id }
+                    .mapNotNull { entry ->
+                        (entry.state as? BookChatState.Answered)?.let {
+                            Exchange(entry.question, it.text, it.containsSpoilers)
+                        }
+                    }
+                val result = withTimeout(QUESTION_TIMEOUT_MS) {
+                    questionPipeline.ask(context, question, policy, history) { stage ->
+                        setChatState(id, BookChatState.Working(stage))
+                    }
+                }
+                when (result) {
+                    is QuestionResult.Answered ->
+                        BookChatState.Answered(result.text, result.containsSpoilers, result.verified)
+                    QuestionResult.SpoilerChoiceNeeded -> BookChatState.SpoilerChoice
+                }
+            } catch (e: TimeoutCancellationException) {
+                BookChatState.Failed("The assistant took too long to respond")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("ReaderViewModel", "Book question failed", e)
+                BookChatState.Failed(e.message ?: "Something went wrong")
+            }
+            setChatState(id, state)
+        }
+    }
+
+    /**
+     * Where the reader is, for the assistant. This is their real place in the book: if they
+     * have jumped back to look at something, spoilers are still judged from where they had
+     * read up to.
+     */
+    private suspend fun readingContext(): ReadingContext? {
+        val pub = _publication.value ?: return null
+        val locator = _returnLocator.value ?: currentLocator ?: lastLocator
+        val progression = locator?.locations?.totalProgression?.toFloat() ?: _progress.value.value
+        return ReadingContext(
+            title = pub.metadata.title ?: UNTITLED_BOOK,
+            author = pub.metadata.authors.firstOrNull()?.name ?: UNKNOWN_AUTHOR,
+            chapter = locator?.let { chapterTitleFor(pub, it) }.orEmpty(),
+            percentRead = kotlin.math.round(progression * 100).toInt().coerceIn(0, 100),
+            recentText = locator?.let { recentText(pub, it) }.orEmpty()
+        )
+    }
+
+    /** The last stretch of the current chapter that the reader has already read. */
+    private suspend fun recentText(pub: Publication, locator: Locator): String =
+        withContext(Dispatchers.IO) {
+            try {
+                val key = ChapterTitles.resourceKey(locator.href.toString())
+                val link = pub.readingOrder.firstOrNull {
+                    ChapterTitles.resourceKey(it.url().toString()) == key
+                }
+                val html = link?.let { pub.get(it)?.read()?.getOrNull() }?.toString(Charsets.UTF_8)
+                if (html == null) "" else BookText.readSoFar(
+                    html, locator.locations.progression ?: 0.0, RECENT_TEXT_CHARS
+                )
+            } catch (e: Exception) {
+                Log.e("ReaderViewModel", "Failed to read the current chapter's text", e)
+                ""
+            }
+        }
 
     private var loadedBookId: Int? = null
     private var loadedGroupId: String? = NO_GROUP
@@ -656,6 +861,9 @@ class ReaderViewModel(
                 _notes.value = emptyList()
                 _groupProgress.value = emptyList()
                 clearReturnPoint()
+                _bookChat.value = emptyList()
+                bookText = null
+                bookTextFor = null
                 currentLocator = null
                 positions = emptyList()
                 loadedGroupId = resolvedGroupId
@@ -966,6 +1174,8 @@ class ReaderViewModel(
         private const val COMPLETION_THRESHOLD = 0.995f
         private const val MAX_SECONDS_PER_PAGE = 300L
         private const val RETURN_POINT_TOLERANCE = 0.0005
+        private const val QUESTION_TIMEOUT_MS = 90_000L
+        private const val RECENT_TEXT_CHARS = 4000
 
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
