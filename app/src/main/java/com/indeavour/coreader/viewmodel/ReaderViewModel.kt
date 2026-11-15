@@ -356,7 +356,11 @@ class ReaderViewModel(
     }
 
     private fun resolveUsernames(userIds: Collection<String>) {
-        val missing = userIds.filter { it.isNotBlank() && !_usernames.value.containsKey(it) }
+        // A placeholder is not an answer: keep asking, so a member whose profile did not exist
+        // (or could not be read) the first time gets their real name once it does.
+        val missing = userIds.filter {
+            it.isNotBlank() && _usernames.value[it].let { name -> name == null || name == UserRepository.UNKNOWN }
+        }
         if (missing.isEmpty()) return
         viewModelScope.launch {
             val resolved = users.usernames(missing)

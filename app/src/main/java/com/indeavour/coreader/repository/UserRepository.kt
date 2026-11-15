@@ -23,7 +23,8 @@ class UserRepository(
 
     companion object {
         private const val TAG = "UserRepository"
-        private const val UNKNOWN = "Unknown User"
+        /** Placeholder returned when a name could not be resolved. Never cached. */
+        const val UNKNOWN = "Unknown User"
 
         /**
          * Display names are immutable enough to cache for the life of the process, and every
