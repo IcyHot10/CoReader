@@ -29,26 +29,33 @@ class BookTextTest {
     }
 
     @Test
+    fun `text is decoded with the encoding the file declares`() {
+        val xml = "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><p>café</p>"
+        assertEquals(xml, BookText.decode(xml.toByteArray(Charsets.ISO_8859_1)))
+
+        val meta = "<html><head><meta charset=\"windows-1252\"></head><body>naïve</body></html>"
+        assertEquals(meta, BookText.decode(meta.toByteArray(charset("windows-1252"))))
+    }
+
+    @Test
+    fun `text with no declared encoding is read as UTF-8`() {
+        assertEquals("<p>café – “quoted”</p>", BookText.decode("<p>café – “quoted”</p>".toByteArray(Charsets.UTF_8)))
+    }
+
+    @Test
+    fun `an unknown declared encoding falls back to UTF-8`() {
+        val xml = "<?xml version=\"1.0\" encoding=\"no-such-charset\"?><p>café</p>"
+        assertEquals(xml, BookText.decode(xml.toByteArray(Charsets.UTF_8)))
+    }
+
+    @Test
+    fun `byte order marks are recognised and removed`() {
+        assertEquals("<p>hi</p>", BookText.decode(byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) + "<p>hi</p>".toByteArray()))
+        assertEquals("<p>hi</p>", BookText.decode(byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + "<p>hi</p>".toByteArray(Charsets.UTF_16LE)))
+    }
+
+    @Test
     fun `an escaped entity stays as written`() {
         assertEquals("use &lt; for less-than", BookText.fromHtml("use &amp;lt; for less-than"))
-    }
-
-    @Test
-    fun `only what has been read is returned`() {
-        val html = "<p>0123456789</p>"
-        assertEquals("01234", BookText.readSoFar(html, 0.5, maxChars = 100))
-        assertEquals("", BookText.readSoFar(html, 0.0, maxChars = 100))
-        assertEquals("0123456789", BookText.readSoFar(html, 1.0, maxChars = 100))
-    }
-
-    @Test
-    fun `the most recent text is kept when there is too much`() {
-        assertEquals("789", BookText.readSoFar("<p>0123456789</p>", 1.0, maxChars = 3))
-    }
-
-    @Test
-    fun `progress outside the chapter is clamped`() {
-        assertEquals("0123456789", BookText.readSoFar("<p>0123456789</p>", 7.0, maxChars = 100))
-        assertEquals("", BookText.readSoFar("<p>0123456789</p>", -1.0, maxChars = 100))
     }
 }

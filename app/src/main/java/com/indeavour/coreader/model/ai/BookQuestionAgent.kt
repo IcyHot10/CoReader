@@ -6,10 +6,13 @@ import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.FunctionCallingConfig
 import com.google.firebase.ai.type.FunctionDeclaration
 import com.google.firebase.ai.type.GenerativeBackend
+import com.google.firebase.ai.type.PromptBlockedException
+import com.google.firebase.ai.type.ResponseStoppedException
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.Tool
 import com.google.firebase.ai.type.ToolConfig
 import com.google.firebase.ai.type.content
+import com.google.firebase.ai.type.generationConfig
 import com.indeavour.coreader.domain.AnswerRequest
 import com.indeavour.coreader.domain.Exchange
 import com.indeavour.coreader.domain.Passage
@@ -61,9 +64,19 @@ class BookQuestionAgent {
                     append("Reader: ${exchange.question.trim()}\n")
                     append("Answer")
                     if (exchange.containedSpoilers) append(" (the reader asked for spoilers)")
+                    // An answer the critic never approved must not be built on as if it were fact.
+                    if (!exchange.verified) append(" (unverified and possibly wrong: do not rely on it)")
                     append(": ${exchange.answer.trim().take(MAX_HISTORY_ANSWER_CHARS)}\n")
                 }
                 append("Use this to work out who or what the new question refers to.\n")
+            }
+        }
+
+        private fun StringBuilder.appendPassages(passages: List<Passage>, label: String = "") {
+            passages.forEachIndexed { index, passage ->
+                append("[$label${index + 1}]")
+                if (passage.chapter.isNotBlank()) append(" ${passage.chapter}")
+                append(": \"${passage.text}\"\n")
             }
         }
 
@@ -78,11 +91,23 @@ class BookQuestionAgent {
                     if (policy == SpoilerPolicy.SPOILERS_ALLOWED) " (taken from anywhere in the book):\n"
                     else " (all from the part the reader has already read):\n"
                 )
-                passages.forEachIndexed { index, passage ->
-                    append("[${index + 1}]")
-                    if (passage.chapter.isNotBlank()) append(" ${passage.chapter}")
-                    append(": \"${passage.text}\"\n")
-                }
+                appendPassages(passages)
+            }
+        }
+
+        /**
+         * Passages from the part of the book the reader has not reached, shown to the critic
+         * only, as evidence of what would be a spoiler.
+         */
+        internal fun describeUnread(passages: List<Passage>): String {
+            if (passages.isEmpty()) return ""
+            return buildString {
+                append("Passages from the part of the book the reader has NOT read yet. The reader must ")
+                append("not learn anything from these. They were found by searching the unread text for ")
+                append("the draft's wording, so most will only mention the same people or places, which ")
+                append("alone is not a spoiler. But if the draft states or hints at an event or fact that ")
+                append("appears here and not in what the reader has read, it is a spoiler:\n")
+                appendPassages(passages, label = "U")
             }
         }
 
@@ -101,6 +126,39 @@ class BookQuestionAgent {
                     "them. Do not reveal or hint at anything after their current position. Give " +
                     "whatever helpful information you can from what they have already read, and " +
                     "state plainly that the rest is left out, without hinting at what it is."
+        }
+
+        /** Everything the writing model is sent for one answer or rewrite. */
+        internal fun answerPrompt(request: AnswerRequest): String = buildString {
+            append(describe(request.context))
+            append('\n').append(spoilerRule(request.policy)).append("\n\n")
+            append(describe(request.passages, request.policy)).append('\n')
+            append(describe(request.history))
+            append("Question: ${request.question.trim()}\n")
+            if (request.previousAnswer != null) {
+                append("\nYour previous answer was rejected by the reviewer:\n")
+                append("\"\"\"\n${request.previousAnswer}\n\"\"\"\n")
+                if (!request.feedback.isNullOrBlank()) append("Reviewer feedback: ${request.feedback}\n")
+                append("Write a new answer that fixes this.\n")
+            }
+        }
+
+        /** Everything the critic is sent to judge one draft. */
+        internal fun reviewPrompt(request: ReviewRequest): String = buildString {
+            append(describe(request.context))
+            append('\n')
+            append(
+                when (request.policy) {
+                    SpoilerPolicy.SPOILERS_ALLOWED ->
+                        "The reader asked for spoilers, so they are permitted in this answer. Still report whether it contains any.\n"
+                    else -> "The reader has not asked for spoilers, so the answer must not contain any.\n"
+                }
+            )
+            append('\n').append(describe(request.passages, request.policy))
+            describeUnread(request.unreadPassages).takeIf { it.isNotEmpty() }?.let { append('\n').append(it) }
+            append('\n').append(describe(request.history))
+            append("\nQuestion: ${request.question.trim()}\n")
+            append("\nDraft answer:\n\"\"\"\n${request.answer}\n\"\"\"\n")
         }
     }
 
@@ -130,15 +188,24 @@ class BookQuestionAgent {
 
     private val reviewModel = backend.generativeModel(
         modelName = MODEL_NAME,
+        // A verdict should be the same every time it is asked for.
+        generationConfig = generationConfig { temperature = 0f },
         systemInstruction = content {
             text(
                 """
                 You are a strict reviewer for a reading companion in an e-book app. You are shown where
                 a reader is in a book, a question they asked and a draft answer. Judge the draft and
                 report your verdict by calling $SUBMIT exactly once.
+                - claims_checked: fill this in FIRST, before deciding anything else. List every statement
+                  of fact in the draft, one per line, each followed by exactly one of: "supported by
+                  passage [n]", "supported by my confident knowledge of the book", "contradicted by
+                  passage [n]", "cannot verify", or "only in unread passage [Un]". Your other answers
+                  must follow from this list.
                 - contains_spoilers: true if the draft reveals or strongly hints at anything after the
                   reader's current position, in this book or its sequels. Things the reader has already
-                  read, or was already told earlier in the conversation, are not spoilers.
+                  read, or was already told earlier in the conversation, are not spoilers. If you are
+                  given passages from the unread part of the book, use them: a statement that appears
+                  only there is a spoiler. A mere mention of the same people or places is not.
                 - If earlier questions and answers are shown, read the question as a follow-up to them:
                   "is she dead?" is about whoever was just being discussed.
                 - useful: true if the draft directly answers the question. A draft that refuses,
@@ -155,7 +222,8 @@ class BookQuestionAgent {
                 - needs_spoilers: true only if the question itself cannot be usefully answered without
                   revealing later events, for example "does she survive?" or "who is the killer?".
                 - feedback: one or two sentences telling the writer exactly what to change. Never
-                  include the spoiler itself. Empty if nothing needs changing.
+                  include the spoiler itself, and never quote or describe anything from the unread
+                  passages: say only which statement to remove. Empty if nothing needs changing.
                 """.trimIndent()
             )
         },
@@ -166,6 +234,7 @@ class BookQuestionAgent {
                         name = SUBMIT,
                         description = "Submit the verdict on the draft answer.",
                         parameters = mapOf(
+                            "claims_checked" to Schema.string("Each statement of fact in the draft, one per line, with how it was checked. Fill this in first."),
                             "contains_spoilers" to Schema.boolean("Whether the draft gives away anything past the reader's position."),
                             "useful" to Schema.boolean("Whether the draft directly answers the question."),
                             "accurate" to Schema.boolean("Whether every statement of fact in the draft is supported by the passages or by confident knowledge of the book."),
@@ -181,19 +250,7 @@ class BookQuestionAgent {
 
     /** Writes an answer, or rewrites a rejected one using the critic's feedback. */
     suspend fun answer(request: AnswerRequest): String {
-        val prompt = buildString {
-            append(describe(request.context))
-            append('\n').append(spoilerRule(request.policy)).append("\n\n")
-            append(describe(request.passages, request.policy)).append('\n')
-            append(describe(request.history))
-            append("Question: ${request.question.trim()}\n")
-            if (request.previousAnswer != null) {
-                append("\nYour previous answer was rejected by the reviewer:\n")
-                append("\"\"\"\n${request.previousAnswer}\n\"\"\"\n")
-                if (!request.feedback.isNullOrBlank()) append("Reviewer feedback: ${request.feedback}\n")
-                append("Write a new answer that fixes this.\n")
-            }
-        }
+        val prompt = answerPrompt(request)
         return call("answer") {
             answerModel.generateContent(prompt).text?.trim().orEmpty()
         }.ifBlank { throw AgentException("The assistant returned an empty answer") }
@@ -201,34 +258,29 @@ class BookQuestionAgent {
 
     /** Has the critic judge a draft answer. */
     suspend fun review(request: ReviewRequest): Review {
-        val prompt = buildString {
-            append(describe(request.context))
-            append('\n')
-            append(
-                when (request.policy) {
-                    SpoilerPolicy.SPOILERS_ALLOWED ->
-                        "The reader asked for spoilers, so they are permitted in this answer. Still report whether it contains any.\n"
-                    else -> "The reader has not asked for spoilers, so the answer must not contain any.\n"
-                }
-            )
-            append('\n').append(describe(request.passages, request.policy))
-            append('\n').append(describe(request.history))
-            append("\nQuestion: ${request.question.trim()}\n")
-            append("\nDraft answer:\n\"\"\"\n${request.answer}\n\"\"\"\n")
-        }
+        val prompt = reviewPrompt(request)
         val args = call("review") {
             reviewModel.generateContent(prompt).functionCalls.firstOrNull { it.name == SUBMIT }?.args
         } ?: throw AgentException("The reviewer did not return a verdict")
 
         fun flag(key: String): Boolean? = (args[key] as? JsonPrimitive)?.booleanOrNull
-        return Review(
+        fun text(key: String): String = (args[key] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+        val review = Review(
             // An unreadable verdict is treated as the cautious one.
             containsSpoilers = flag("contains_spoilers") ?: true,
             useful = flag("useful") ?: false,
             needsSpoilers = flag("needs_spoilers") ?: false,
             accurate = flag("accurate") ?: false,
-            feedback = (args["feedback"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+            feedback = text("feedback"),
+            reasoning = text("claims_checked")
         )
+        // Why a draft was rejected is otherwise invisible; this is the place to look.
+        Log.d(
+            TAG,
+            "Review: spoilers=${review.containsSpoilers} useful=${review.useful} accurate=${review.accurate} " +
+                "needsSpoilers=${review.needsSpoilers} feedback=\"${review.feedback}\"\n${review.reasoning}"
+        )
+        return review
     }
 
     private suspend fun <T> call(what: String, block: suspend () -> T): T = try {
@@ -237,6 +289,12 @@ class BookQuestionAgent {
         throw e
     } catch (e: AgentException) {
         throw e
+    } catch (e: PromptBlockedException) {
+        Log.w(TAG, "Book question $what request was blocked", e)
+        throw AgentException("The assistant's content filters blocked this question", e)
+    } catch (e: ResponseStoppedException) {
+        Log.w(TAG, "Book question $what response was stopped", e)
+        throw AgentException("The assistant's content filters stopped the answer", e)
     } catch (e: Exception) {
         Log.e(TAG, "Book question $what request failed", e)
         throw AgentException("Couldn't reach the assistant: ${e.message}", e)

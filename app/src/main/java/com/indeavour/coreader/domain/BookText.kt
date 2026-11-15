@@ -15,6 +15,31 @@ object BookText {
         "&lsquo;" to "‘", "&rsquo;" to "’", "&ldquo;" to "“", "&rdquo;" to "”"
     )
 
+    private val DECLARED_CHARSET = Regex("(?i)(?:encoding|charset)\\s*=\\s*[\"']?\\s*([a-z0-9._:-]+)")
+
+    /**
+     * Decodes a chapter file to text using the encoding it declares, either in its XML
+     * declaration or a `<meta charset>`; UTF-8 when it declares none, or one that is unknown.
+     * Nearly every EPUB is UTF-8, but an older one that is not would otherwise come out garbled.
+     */
+    fun decode(bytes: ByteArray): String {
+        val charset = when {
+            bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte() -> Charsets.UTF_16BE
+            bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte() -> Charsets.UTF_16LE
+            else -> {
+                // The declaration is plain ASCII near the top of the file, whatever the encoding.
+                val top = String(bytes, 0, minOf(bytes.size, 1024), Charsets.ISO_8859_1)
+                val name = DECLARED_CHARSET.find(top)?.groupValues?.get(1)
+                try {
+                    name?.let { java.nio.charset.Charset.forName(it) } ?: Charsets.UTF_8
+                } catch (e: Exception) {
+                    Charsets.UTF_8
+                }
+            }
+        }
+        return String(bytes, charset).removePrefix("\uFEFF")
+    }
+
     /** The readable text of [html]: no markup, scripts or styles, whitespace collapsed. */
     fun fromHtml(html: String): String {
         var text = html.replace(HIDDEN_BLOCKS, " ").replace(COMMENTS, " ").replace(TAGS, " ")
@@ -26,15 +51,5 @@ object BookText {
         // Last, so that "&amp;lt;" comes out as the literal text "&lt;" rather than "<".
         text = text.replace("&amp;", "&")
         return WHITESPACE.replace(text, " ").trim()
-    }
-
-    /**
-     * The last [maxChars] of what has been read of a chapter: its text up to [progression]
-     * (0..1 through the chapter), so nothing ahead of the reader is included.
-     */
-    fun readSoFar(html: String, progression: Double, maxChars: Int): String {
-        val text = fromHtml(html)
-        val read = text.take((text.length * progression.coerceIn(0.0, 1.0)).toInt())
-        return read.takeLast(maxChars)
     }
 }

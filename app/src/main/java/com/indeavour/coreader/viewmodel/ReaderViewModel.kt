@@ -14,9 +14,11 @@ import com.indeavour.coreader.domain.ChapterText
 import com.indeavour.coreader.domain.ChapterTitles
 import com.indeavour.coreader.domain.Exchange
 import com.indeavour.coreader.domain.Passage
-import com.indeavour.coreader.domain.PassageSearch
+import com.indeavour.coreader.domain.PassageIndex
 import com.indeavour.coreader.domain.QuestionResult
 import com.indeavour.coreader.domain.QuestionStage
+import com.indeavour.coreader.domain.ReadPosition
+import com.indeavour.coreader.domain.ReadSoFar
 import com.indeavour.coreader.domain.ReadingContext
 import com.indeavour.coreader.domain.SpoilerPolicy
 import com.indeavour.coreader.model.ai.AgentException
@@ -216,12 +218,15 @@ class ReaderViewModel(
         data class Answered(
             val text: String,
             val containsSpoilers: Boolean,
-            val verified: Boolean
+            val verified: Boolean,
+            /** The critic checked it against passages of the book, not just from memory. */
+            val grounded: Boolean
         ) : BookChatState
 
         /** Only a spoiler answers the question; waiting for the reader to choose. */
         data object SpoilerChoice : BookChatState
-        data class Failed(val message: String) : BookChatState
+        /** [policy] is what was being attempted, so that it can be tried again. */
+        data class Failed(val message: String, val policy: SpoilerPolicy) : BookChatState
     }
 
     data class BookChatEntry(val id: Long, val question: String, val state: BookChatState)
@@ -235,12 +240,30 @@ class ReaderViewModel(
     // Created on first use: most reading sessions never ask anything.
     private val questionPipeline by lazy {
         val agent = BookQuestionAgent()
-        BookQuestionPipeline(answer = agent::answer, review = agent::review, evidence = ::findPassages)
+        BookQuestionPipeline(
+            answer = agent::answer,
+            review = agent::review,
+            evidence = ::findPassages,
+            unreadText = ::findUnreadPassages
+        )
     }
 
     /** The whole book as plain text, one entry per file in reading order; read on first use. */
     private var bookText: List<ChapterText>? = null
     private var bookTextFor: Publication? = null
+
+    /** [bookText] prepared for searching; built once per book. */
+    private var bookIndex: PassageIndex? = null
+    private var bookIndexFor: List<ChapterText>? = null
+
+    private suspend fun loadBookIndex(pub: Publication): PassageIndex {
+        val book = loadBookText(pub)
+        bookIndex?.takeIf { bookIndexFor === book }?.let { return it }
+        return withContext(Dispatchers.Default) { PassageIndex(book) }.also {
+            bookIndex = it
+            bookIndexFor = book
+        }
+    }
 
     private suspend fun loadBookText(pub: Publication): List<ChapterText> {
         bookText?.takeIf { bookTextFor === pub }?.let { return it }
@@ -251,8 +274,11 @@ class ReaderViewModel(
         val titles = chapterTitles
         val loaded = withContext(Dispatchers.IO) {
             pub.readingOrder.mapIndexed { index, link ->
+                // Only pages of text: an image or stylesheet in the reading order is not prose.
+                // A file that does not say what it is is assumed to be a page, as EPUB pages are.
+                val isPage = link.mediaType?.isHtml ?: true
                 val html = try {
-                    pub.get(link)?.read()?.getOrNull()?.toString(Charsets.UTF_8)
+                    if (isPage) pub.get(link)?.read()?.getOrNull()?.let { BookText.decode(it) } else null
                 } catch (e: Exception) {
                     Log.e("ReaderViewModel", "Failed to read ${link.href}", e)
                     null
@@ -270,28 +296,26 @@ class ReaderViewModel(
      * spoilers, only the part they have already read is searched, so the evidence itself can
      * never give anything away.
      */
-    private suspend fun findPassages(query: String, policy: SpoilerPolicy): List<Passage> {
+    private suspend fun findPassages(query: String, policy: SpoilerPolicy): List<Passage> =
+        if (policy == SpoilerPolicy.SPOILERS_ALLOWED) {
+            searchBook(query, PassageIndex.Scope.WHOLE_BOOK)
+        } else {
+            searchBook(query, PassageIndex.Scope.READ)
+        }
+
+    /**
+     * Searches the part of the book the reader has not reached. Only the critic sees the
+     * result, as evidence that a draft answer is repeating something from further on.
+     */
+    private suspend fun findUnreadPassages(query: String): List<Passage> =
+        searchBook(query, PassageIndex.Scope.UNREAD)
+
+    private suspend fun searchBook(query: String, scope: PassageIndex.Scope): List<Passage> {
         val pub = _publication.value ?: return emptyList()
         return try {
-            val chapters = loadBookText(pub)
-            val searchable = if (policy == SpoilerPolicy.SPOILERS_ALLOWED) {
-                chapters
-            } else {
-                val locator = _returnLocator.value ?: currentLocator ?: lastLocator
-                val key = locator?.let { ChapterTitles.resourceKey(it.href.toString()) }
-                val current = pub.readingOrder.indexOfFirst {
-                    ChapterTitles.resourceKey(it.url().toString()) == key
-                }
-                if (current < 0) {
-                    emptyList()
-                } else {
-                    val progression = (locator?.locations?.progression ?: 0.0).coerceIn(0.0, 1.0)
-                    val reading = chapters[current]
-                    chapters.take(current) +
-                        reading.copy(text = reading.text.take((reading.text.length * progression).toInt()))
-                }
-            }
-            withContext(Dispatchers.Default) { PassageSearch.find(searchable, query) }
+            val index = loadBookIndex(pub)
+            val position = readPosition(pub)
+            withContext(Dispatchers.Default) { index.search(query, scope, position) }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -302,7 +326,7 @@ class ReaderViewModel(
 
     /** Asks a question about the open book; the answer is kept free of spoilers. */
     fun askAboutBook(question: String) {
-        val text = question.trim()
+        val text = question.trim().take(MAX_QUESTION_CHARS)
         if (text.isEmpty()) return
         val id = nextChatId++
         _bookChat.value = _bookChat.value +
@@ -322,6 +346,19 @@ class ReaderViewModel(
         )
     }
 
+    /** Runs a question that failed again, the same way it was being asked. */
+    fun retryQuestion(id: Long) {
+        val entry = _bookChat.value.firstOrNull { it.id == id } ?: return
+        val failed = entry.state as? BookChatState.Failed ?: return
+        setChatState(id, BookChatState.Working(QuestionStage.ANSWERING))
+        runQuestion(id, entry.question, failed.policy)
+    }
+
+    /** Forgets the conversation. A question still being answered is dropped when it finishes. */
+    fun clearBookChat() {
+        _bookChat.value = emptyList()
+    }
+
     private fun setChatState(id: Long, state: BookChatState) {
         _bookChat.value = _bookChat.value.map { if (it.id == id) it.copy(state = state) else it }
     }
@@ -337,66 +374,75 @@ class ReaderViewModel(
                     .takeWhile { it.id != id }
                     .mapNotNull { entry ->
                         (entry.state as? BookChatState.Answered)?.let {
-                            Exchange(entry.question, it.text, it.containsSpoilers)
+                            Exchange(entry.question, it.text, it.containsSpoilers, it.verified)
                         }
                     }
+                val startedAt = System.currentTimeMillis()
                 val result = withTimeout(QUESTION_TIMEOUT_MS) {
-                    questionPipeline.ask(context, question, policy, history) { stage ->
+                    questionPipeline.ask(
+                        context, question, policy, history,
+                        isOutOfTime = { System.currentTimeMillis() - startedAt > REWRITE_BUDGET_MS }
+                    ) { stage ->
                         setChatState(id, BookChatState.Working(stage))
                     }
                 }
                 when (result) {
-                    is QuestionResult.Answered ->
-                        BookChatState.Answered(result.text, result.containsSpoilers, result.verified)
+                    is QuestionResult.Answered -> BookChatState.Answered(
+                        result.text, result.containsSpoilers, result.verified, result.grounded
+                    )
                     QuestionResult.SpoilerChoiceNeeded -> BookChatState.SpoilerChoice
                 }
             } catch (e: TimeoutCancellationException) {
-                BookChatState.Failed("The assistant took too long to respond")
+                BookChatState.Failed("The assistant took too long to respond", policy)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e("ReaderViewModel", "Book question failed", e)
-                BookChatState.Failed(e.message ?: "Something went wrong")
+                BookChatState.Failed(e.message ?: "Something went wrong", policy)
             }
             setChatState(id, state)
         }
     }
 
     /**
-     * Where the reader is, for the assistant. This is their real place in the book: if they
-     * have jumped back to look at something, spoilers are still judged from where they had
-     * read up to.
+     * How much of the book counts as read, for the assistant. This is the reader's real place:
+     * if they have jumped back to look at something, it is still where they had read up to. It
+     * runs to the end of the page in front of them, since that is text they can see and ask about.
      */
+    private fun readPosition(pub: Publication): ReadPosition? {
+        val anchor = _returnLocator.value
+        val locator = anchor ?: currentLocator ?: lastLocator ?: return null
+        val key = ChapterTitles.resourceKey(locator.href.toString())
+        val index = pub.readingOrder.indexOfFirst { ChapterTitles.resourceKey(it.url().toString()) == key }
+        if (index < 0) return null
+        val endOfPage = when {
+            anchor != null -> returnPageEnd
+            locator === currentLocator -> currentPageEnd
+            else -> null
+        }
+        return ReadPosition(index, endOfPage ?: locator.locations.progression ?: 0.0)
+    }
+
     private suspend fun readingContext(): ReadingContext? {
         val pub = _publication.value ?: return null
         val locator = _returnLocator.value ?: currentLocator ?: lastLocator
         val progression = locator?.locations?.totalProgression?.toFloat() ?: _progress.value.value
+        val recentText = try {
+            ReadSoFar.recentText(loadBookText(pub), readPosition(pub), RECENT_TEXT_CHARS)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("ReaderViewModel", "Failed to read the book's text", e)
+            ""
+        }
         return ReadingContext(
             title = pub.metadata.title ?: UNTITLED_BOOK,
             author = pub.metadata.authors.firstOrNull()?.name ?: UNKNOWN_AUTHOR,
             chapter = locator?.let { chapterTitleFor(pub, it) }.orEmpty(),
             percentRead = kotlin.math.round(progression * 100).toInt().coerceIn(0, 100),
-            recentText = locator?.let { recentText(pub, it) }.orEmpty()
+            recentText = recentText
         )
     }
-
-    /** The last stretch of the current chapter that the reader has already read. */
-    private suspend fun recentText(pub: Publication, locator: Locator): String =
-        withContext(Dispatchers.IO) {
-            try {
-                val key = ChapterTitles.resourceKey(locator.href.toString())
-                val link = pub.readingOrder.firstOrNull {
-                    ChapterTitles.resourceKey(it.url().toString()) == key
-                }
-                val html = link?.let { pub.get(it)?.read()?.getOrNull() }?.toString(Charsets.UTF_8)
-                if (html == null) "" else BookText.readSoFar(
-                    html, locator.locations.progression ?: 0.0, RECENT_TEXT_CHARS
-                )
-            } catch (e: Exception) {
-                Log.e("ReaderViewModel", "Failed to read the current chapter's text", e)
-                ""
-            }
-        }
 
     private var loadedBookId: Int? = null
     private var loadedGroupId: String? = NO_GROUP
@@ -628,6 +674,7 @@ class ReaderViewModel(
         // it stays on the current page.
         _initialLocator.value = locator
         currentLocator = locator
+        currentPageEnd = ReadSoFar.endOfPage(pageIndex, totalPages, locator.locations.progression ?: 0.0)
 
         // While the reader is only visiting another part of the book, the saved position stays
         // where they were actually reading.
@@ -652,6 +699,12 @@ class ReaderViewModel(
     /** Where the navigator is right now, which differs from [lastLocator] while visiting. */
     private var currentLocator: Locator? = null
 
+    /** How far through its chapter the bottom of the current page is; see [ReadSoFar.endOfPage]. */
+    private var currentPageEnd: Double? = null
+
+    /** The same, for the page the reader left when they jumped away. */
+    private var returnPageEnd: Double? = null
+
     private val _returnLocator = MutableStateFlow<Locator?>(null)
 
     /**
@@ -673,6 +726,7 @@ class ReaderViewModel(
         val from = currentLocator ?: lastLocator ?: return
         if (returnPoint.mark(from, from.locations.totalProgression, targetProgression)) {
             lastLocator = from
+            returnPageEnd = if (from === currentLocator) currentPageEnd else null
             _returnLocator.value = from
         }
     }
@@ -680,6 +734,7 @@ class ReaderViewModel(
     /** The reader is heading back to the return point; normal progress saving resumes there. */
     fun clearReturnPoint() {
         returnPoint.clear()
+        returnPageEnd = null
         _returnLocator.value = null
     }
 
@@ -864,6 +919,9 @@ class ReaderViewModel(
                 _bookChat.value = emptyList()
                 bookText = null
                 bookTextFor = null
+                bookIndex = null
+                bookIndexFor = null
+                currentPageEnd = null
                 currentLocator = null
                 positions = emptyList()
                 loadedGroupId = resolvedGroupId
@@ -1175,6 +1233,10 @@ class ReaderViewModel(
         private const val MAX_SECONDS_PER_PAGE = 300L
         private const val RETURN_POINT_TOLERANCE = 0.0005
         private const val QUESTION_TIMEOUT_MS = 90_000L
+
+        /** After this long no further rewrite is started; the best answer so far is used. */
+        private const val REWRITE_BUDGET_MS = 40_000L
+        private const val MAX_QUESTION_CHARS = 500
         private const val RECENT_TEXT_CHARS = 4000
 
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {

@@ -17,7 +17,9 @@ data class Exchange(
     val question: String,
     val answer: String,
     /** The reader asked for, and was shown, spoilers in this answer. */
-    val containedSpoilers: Boolean = false
+    val containedSpoilers: Boolean = false,
+    /** False when the critic never approved the answer, so it may be wrong. */
+    val verified: Boolean = true
 )
 
 enum class SpoilerPolicy {
@@ -56,7 +58,12 @@ data class ReviewRequest(
     /** Earlier questions and answers, oldest first; needed to judge a follow-up question. */
     val history: List<Exchange> = emptyList(),
     /** Passages from the book's own text to check the answer's statements against. */
-    val passages: List<Passage> = emptyList()
+    val passages: List<Passage> = emptyList(),
+    /**
+     * Passages from the part of the book the reader has not reached that match the draft:
+     * evidence of what would be a spoiler. For the critic only; never shown to the writer.
+     */
+    val unreadPassages: List<Passage> = emptyList()
 )
 
 /** The reviewer's verdict on one draft answer. */
@@ -70,7 +77,9 @@ data class Review(
     /** How to fix the draft; empty when nothing is wrong. */
     val feedback: String,
     /** What the draft states as fact is right: nothing contradicts the book or is made up. */
-    val accurate: Boolean = true
+    val accurate: Boolean = true,
+    /** The critic's working: each claim in the draft and how it was checked. For logs only. */
+    val reasoning: String = ""
 )
 
 sealed interface QuestionResult {
@@ -81,7 +90,12 @@ sealed interface QuestionResult {
          * False when the reviewer never signed the answer off (it may be wrong or incomplete)
          * and this is the best attempt.
          */
-        val verified: Boolean
+        val verified: Boolean,
+        /**
+         * The critic had passages of the book's own text to check the answer against. When
+         * false, an approval rests only on what the critic remembers of the book.
+         */
+        val grounded: Boolean = false
     ) : QuestionResult
 
     /** Only a spoiler answers this; the reader has to choose whether they want one. */
@@ -98,7 +112,9 @@ enum class QuestionStage { ANSWERING, CHECKING, REVISING }
  *
  * Both models are given passages from the book itself ([evidence]). The writer answers from
  * them; the critic is given the ones matching the draft, so it checks each statement against
- * what the book says rather than against its own memory of the book.
+ * what the book says rather than against its own memory of the book. The critic alone is also
+ * shown matching passages from further on in the book ([unreadText]), so it can see when a
+ * draft is repeating something the reader has not got to.
  *
  * The models and the search are passed in as plain functions, so the rules here (what gets
  * shown, what gets rewritten, when the reader is asked about spoilers) can be tested without
@@ -112,6 +128,12 @@ class BookQuestionPipeline(
      * may be searched: only what the reader has read, unless they asked for spoilers.
      */
     private val evidence: suspend (query: String, policy: SpoilerPolicy) -> List<Passage> = { _, _ -> emptyList() },
+    /**
+     * Finds passages in the part of the book the reader has NOT reached. A draft that matches
+     * text found only there is giving something away, which the critic could otherwise only
+     * guess at from memory.
+     */
+    private val unreadText: suspend (query: String) -> List<Passage> = { emptyList() },
     private val maxRevisions: Int = 2
 ) {
 
@@ -120,6 +142,11 @@ class BookQuestionPipeline(
         question: String,
         policy: SpoilerPolicy = SpoilerPolicy.NO_SPOILERS,
         history: List<Exchange> = emptyList(),
+        /**
+         * Asked before each rewrite. Once it says yes, no further rewrite is started and the
+         * best draft so far is used, so a slow run ends with an answer instead of a timeout.
+         */
+        isOutOfTime: () -> Boolean = { false },
         onStage: (QuestionStage) -> Unit = {}
     ): QuestionResult {
         var draft = ""
@@ -132,7 +159,10 @@ class BookQuestionPipeline(
             .joinToString(" ")
         val passagesForWriting = evidence(topic, policy)
 
-        repeat(maxRevisions + 1) { attempt ->
+        var grounded = false
+
+        for (attempt in 0..maxRevisions) {
+            if (attempt > 0 && isOutOfTime()) break
             onStage(if (attempt == 0) QuestionStage.ANSWERING else QuestionStage.REVISING)
             draft = answer(
                 AnswerRequest(
@@ -144,30 +174,35 @@ class BookQuestionPipeline(
             onStage(QuestionStage.CHECKING)
             // Searched again with the draft, to find the text behind the statements it makes.
             val passagesForChecking = evidence("$topic $draft", policy)
-            verdict = review(ReviewRequest(context, question, draft, policy, history, passagesForChecking))
+            grounded = passagesForChecking.isNotEmpty()
+            // Nothing is a spoiler to a reader who asked for them, so there is nothing to look for.
+            val unread = if (policy == SpoilerPolicy.SPOILERS_ALLOWED) emptyList() else unreadText(draft)
+            verdict = review(
+                ReviewRequest(context, question, draft, policy, history, passagesForChecking, unread)
+            )
 
             when (policy) {
                 SpoilerPolicy.NO_SPOILERS -> {
                     // No amount of rewriting helps if the question itself needs a spoiler.
                     if (verdict.needsSpoilers) return QuestionResult.SpoilerChoiceNeeded
                     if (!verdict.containsSpoilers && verdict.useful && verdict.accurate) {
-                        return QuestionResult.Answered(draft, containsSpoilers = false, verified = true)
+                        return QuestionResult.Answered(draft, containsSpoilers = false, verified = true, grounded = grounded)
                     }
                 }
                 SpoilerPolicy.SPOILERS_ALLOWED -> if (verdict.useful && verdict.accurate) {
-                    return QuestionResult.Answered(draft, verdict.containsSpoilers, verified = true)
+                    return QuestionResult.Answered(draft, verdict.containsSpoilers, verified = true, grounded = grounded)
                 }
                 // The reader accepted a partial answer, so it need not fully answer the question;
                 // it must still be spoiler-free and true.
                 SpoilerPolicy.NO_SPOILERS_BEST_EFFORT -> if (!verdict.containsSpoilers && verdict.accurate) {
-                    return QuestionResult.Answered(draft, containsSpoilers = false, verified = true)
+                    return QuestionResult.Answered(draft, containsSpoilers = false, verified = true, grounded = grounded)
                 }
             }
             feedback = verdict.feedback
         }
 
-        // Out of rewrites. A draft the critic still calls a spoiler is never shown to a reader
-        // who has not asked for spoilers.
+        // Out of rewrites, or out of time. A draft the critic still calls a spoiler is never shown
+        // to a reader who has not asked for spoilers.
         return when (policy) {
             SpoilerPolicy.NO_SPOILERS ->
                 if (verdict.containsSpoilers) {

@@ -1104,6 +1104,8 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                 entries = bookChat,
                 onAsk = { viewModel.askAboutBook(it) },
                 onSpoilerChoice = { id, withSpoilers -> viewModel.chooseSpoilers(id, withSpoilers) },
+                onRetry = { viewModel.retryQuestion(it) },
+                onClear = { viewModel.clearBookChat() },
                 onClose = { showAskSheet = false },
                 colorScheme = colorScheme
             )
@@ -1154,6 +1156,8 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         entries: List<ReaderViewModel.BookChatEntry>,
         onAsk: (String) -> Unit,
         onSpoilerChoice: (Long, Boolean) -> Unit,
+        onRetry: (Long) -> Unit,
+        onClear: () -> Unit,
         onClose: () -> Unit,
         colorScheme: ColorScheme
     ) {
@@ -1179,11 +1183,22 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                     .imePadding()
                     .padding(horizontal = 16.dp)
             ) {
-                Text(
-                    "Ask about this book",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = colorScheme.secondary
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Ask about this book",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = colorScheme.secondary
+                    )
+                    if (entries.isNotEmpty()) {
+                        TextButton(onClick = onClear) {
+                            Text("Clear", color = colorScheme.secondary)
+                        }
+                    }
+                }
                 Text(
                     "Answers are checked against the book's text, and so they don't give away anything past where you are.",
                     style = MaterialTheme.typography.labelSmall,
@@ -1245,16 +1260,26 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                 }
 
                                 is ReaderViewModel.BookChatState.Answered -> {
-                                    Text(
-                                        state.text,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = colorScheme.secondary
-                                    )
+                                    // Selectable, so an answer can be copied.
+                                    androidx.compose.foundation.text.selection.SelectionContainer {
+                                        Text(
+                                            state.text,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = colorScheme.secondary
+                                        )
+                                    }
                                     Spacer(Modifier.height(4.dp))
                                     Text(
                                         buildString {
                                             append(if (state.containsSpoilers) "Contains spoilers" else "Spoiler-free")
-                                            append(if (state.verified) " • checked" else " • couldn't be verified")
+                                            append(
+                                                when {
+                                                    !state.verified -> " • couldn't be verified"
+                                                    state.grounded -> " • checked against the book"
+                                                    // Approved, but only from the assistant's memory.
+                                                    else -> " • not found in the book's text"
+                                                }
+                                            )
                                         },
                                         style = MaterialTheme.typography.labelSmall,
                                         color = colorScheme.secondary.copy(alpha = 0.6f)
@@ -1285,11 +1310,19 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                     }
                                 }
 
-                                is ReaderViewModel.BookChatState.Failed -> Text(
-                                    state.message,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = colorScheme.secondary.copy(alpha = 0.7f)
-                                )
+                                is ReaderViewModel.BookChatState.Failed -> Row(
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        state.message,
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colorScheme.secondary.copy(alpha = 0.7f)
+                                    )
+                                    TextButton(onClick = { onRetry(entry.id) }) {
+                                        Text("Try again", color = colorScheme.secondary)
+                                    }
+                                }
                             }
                         }
                     }
@@ -1301,7 +1334,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                 ) {
                     TextField(
                         value = question,
-                        onValueChange = { question = it },
+                        onValueChange = { question = it.take(MAX_QUESTION_CHARS) },
                         placeholder = { Text("Ask a question…") },
                         modifier = Modifier.weight(1f),
                         maxLines = 3,
@@ -1600,6 +1633,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     private companion object {
         const val READY_TIMEOUT_MS = 3000L
         const val READER_PREFS = "reader_prefs"
+        const val MAX_QUESTION_CHARS = 500
         const val PREF_PAGE_CURL = "page_curl"
     }
 

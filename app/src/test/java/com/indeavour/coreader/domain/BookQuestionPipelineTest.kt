@@ -20,6 +20,7 @@ class BookQuestionPipelineTest {
         val answerRequests = mutableListOf<AnswerRequest>()
         val reviewRequests = mutableListOf<ReviewRequest>()
         val searches = mutableListOf<Pair<String, SpoilerPolicy>>()
+        val unreadSearches = mutableListOf<String>()
         private val drafts = drafts.iterator()
         private val verdicts = verdicts.iterator()
 
@@ -28,11 +29,56 @@ class BookQuestionPipelineTest {
             review = { request -> reviewRequests += request; this.verdicts.next() },
             // The "book" simply echoes what was searched for, so tests can see what reached whom.
             evidence = { query, policy -> searches += query to policy; listOf(Passage("found", query)) },
+            unreadText = { query -> unreadSearches += query; listOf(Passage("later", "unread: $query")) },
             maxRevisions = maxRevisions
         )
     }
 
     private val wrong = Review(containsSpoilers = false, useful = true, needsSpoilers = false, feedback = "Jessica is his mother, not his sister.", accurate = false)
+
+    // ---------------------------------------------------------------- checking against unread text
+
+    @Test
+    fun `the critic is shown unread text matching the draft`() {
+        val script = Script(listOf("He becomes emperor."), listOf(fine))
+        script.ask()
+        assertEquals(listOf("He becomes emperor."), script.unreadSearches)
+        assertEquals(
+            listOf(Passage("later", "unread: He becomes emperor.")),
+            script.reviewRequests.single().unreadPassages
+        )
+    }
+
+    @Test
+    fun `every rewrite is checked against unread text again`() {
+        val script = Script(listOf("He becomes emperor.", "He is the duke's son."), listOf(spoiler, fine))
+        script.ask()
+        assertEquals(listOf("He becomes emperor.", "He is the duke's son."), script.unreadSearches)
+    }
+
+    @Test
+    fun `the writer is never given unread text`() {
+        val script = Script(listOf("a", "b", "c"), List(3) { spoiler })
+        script.ask()
+        script.answerRequests.forEach { request ->
+            assertTrue(request.passages.none { it.chapter == "later" })
+        }
+    }
+
+    @Test
+    fun `unread text is not searched when the reader asked for spoilers`() {
+        val script = Script(listOf("He becomes emperor."), listOf(spoiler))
+        script.ask(SpoilerPolicy.SPOILERS_ALLOWED)
+        assertTrue(script.unreadSearches.isEmpty())
+        assertTrue(script.reviewRequests.single().unreadPassages.isEmpty())
+    }
+
+    @Test
+    fun `unread text is still searched after the reader declined spoilers`() {
+        val script = Script(listOf("The rest would be a spoiler."), listOf(fine))
+        script.ask(SpoilerPolicy.NO_SPOILERS_BEST_EFFORT)
+        assertEquals(1, script.unreadSearches.size)
+    }
 
     // ---------------------------------------------------------------- checking the facts
 
@@ -40,7 +86,7 @@ class BookQuestionPipelineTest {
     fun `a wrong answer is sent back with the correction and the rewrite is shown`() {
         val script = Script(listOf("Jessica is his sister.", "Jessica is his mother."), listOf(wrong, fine))
         assertEquals(
-            QuestionResult.Answered("Jessica is his mother.", containsSpoilers = false, verified = true),
+            QuestionResult.Answered("Jessica is his mother.", containsSpoilers = false, verified = true, grounded = true),
             script.ask()
         )
         assertEquals("Jessica is his mother, not his sister.", script.answerRequests[1].feedback)
@@ -59,7 +105,7 @@ class BookQuestionPipelineTest {
     fun `accuracy is checked even when the reader asked for spoilers`() {
         val script = Script(listOf("He dies.", "He becomes emperor."), listOf(wrong.copy(containsSpoilers = true), spoiler))
         assertEquals(
-            QuestionResult.Answered("He becomes emperor.", containsSpoilers = true, verified = true),
+            QuestionResult.Answered("He becomes emperor.", containsSpoilers = true, verified = true, grounded = true),
             script.ask(SpoilerPolicy.SPOILERS_ALLOWED)
         )
     }
@@ -68,7 +114,7 @@ class BookQuestionPipelineTest {
     fun `a partial answer after declining spoilers must still be true`() {
         val script = Script(listOf("Jessica is his sister.", "Jessica is his mother."), listOf(wrong, onlyASpoilerWillDo))
         assertEquals(
-            QuestionResult.Answered("Jessica is his mother.", containsSpoilers = false, verified = true),
+            QuestionResult.Answered("Jessica is his mother.", containsSpoilers = false, verified = true, grounded = true),
             script.ask(SpoilerPolicy.NO_SPOILERS_BEST_EFFORT)
         )
     }
@@ -102,8 +148,49 @@ class BookQuestionPipelineTest {
     private fun Script.ask(
         policy: SpoilerPolicy = SpoilerPolicy.NO_SPOILERS,
         stages: MutableList<QuestionStage>? = null,
-        history: List<Exchange> = emptyList()
-    ) = runBlocking { pipeline.ask(context, "Who is Paul?", policy, history) { stages?.add(it) } }
+        history: List<Exchange> = emptyList(),
+        isOutOfTime: () -> Boolean = { false }
+    ) = runBlocking { pipeline.ask(context, "Who is Paul?", policy, history, isOutOfTime) { stages?.add(it) } }
+
+    // ---------------------------------------------------------------- running out of time
+
+    @Test
+    fun `no rewrite is started once time is up and the draft so far is shown unverified`() {
+        val script = Script(listOf("Jessica is his sister."), listOf(wrong))
+        assertEquals(
+            QuestionResult.Answered("Jessica is his sister.", containsSpoilers = false, verified = false),
+            script.ask(isOutOfTime = { true })
+        )
+        assertEquals(1, script.answerRequests.size)
+    }
+
+    @Test
+    fun `the first answer is always attempted even with no time left`() {
+        val script = Script(listOf("He is the duke's son."), listOf(fine))
+        assertTrue((script.ask(isOutOfTime = { true }) as QuestionResult.Answered).verified)
+    }
+
+    @Test
+    fun `running out of time never lets a spoiler through`() {
+        val script = Script(listOf("He becomes emperor."), listOf(spoiler))
+        assertEquals(QuestionResult.SpoilerChoiceNeeded, script.ask(isOutOfTime = { true }))
+    }
+
+    // ---------------------------------------------------------------- how well an approval is founded
+
+    @Test
+    fun `an approval with no passages to check against is not called grounded`() {
+        val pipeline = BookQuestionPipeline(
+            answer = { "He is the duke's son." },
+            review = { fine }
+            // No evidence function: the book's text has nothing on the question.
+        )
+        val result = runBlocking { pipeline.ask(context, "Who is Paul?") }
+        assertEquals(
+            QuestionResult.Answered("He is the duke's son.", containsSpoilers = false, verified = true, grounded = false),
+            result
+        )
+    }
 
     // ---------------------------------------------------------------- follow-up questions
 
@@ -135,7 +222,7 @@ class BookQuestionPipelineTest {
     fun `an answer the critic approves is shown as verified and spoiler-free`() {
         val script = Script(listOf(" Paul is the duke's son. "), listOf(fine))
         assertEquals(
-            QuestionResult.Answered("Paul is the duke's son.", containsSpoilers = false, verified = true),
+            QuestionResult.Answered("Paul is the duke's son.", containsSpoilers = false, verified = true, grounded = true),
             script.ask()
         )
         assertEquals(1, script.answerRequests.size)
@@ -146,7 +233,7 @@ class BookQuestionPipelineTest {
     fun `a spoiler is sent back with the critic's feedback and the rewrite is shown`() {
         val script = Script(listOf("He becomes emperor.", "He is the duke's son."), listOf(spoiler, fine))
         assertEquals(
-            QuestionResult.Answered("He is the duke's son.", containsSpoilers = false, verified = true),
+            QuestionResult.Answered("He is the duke's son.", containsSpoilers = false, verified = true, grounded = true),
             script.ask()
         )
         val rewrite = script.answerRequests[1]
@@ -216,7 +303,7 @@ class BookQuestionPipelineTest {
     fun `with spoilers allowed a useful spoiler is shown and labelled`() {
         val script = Script(listOf("He becomes emperor."), listOf(spoiler))
         assertEquals(
-            QuestionResult.Answered("He becomes emperor.", containsSpoilers = true, verified = true),
+            QuestionResult.Answered("He becomes emperor.", containsSpoilers = true, verified = true, grounded = true),
             script.ask(SpoilerPolicy.SPOILERS_ALLOWED)
         )
         assertEquals(SpoilerPolicy.SPOILERS_ALLOWED, script.answerRequests.single().policy)
@@ -226,7 +313,7 @@ class BookQuestionPipelineTest {
     fun `with spoilers allowed an unhelpful answer is still rewritten`() {
         val script = Script(listOf("I can't say.", "He becomes emperor."), listOf(unhelpful, spoiler))
         assertEquals(
-            QuestionResult.Answered("He becomes emperor.", containsSpoilers = true, verified = true),
+            QuestionResult.Answered("He becomes emperor.", containsSpoilers = true, verified = true, grounded = true),
             script.ask(SpoilerPolicy.SPOILERS_ALLOWED)
         )
     }
@@ -249,7 +336,8 @@ class BookQuestionPipelineTest {
             QuestionResult.Answered(
                 "So far he is the duke's son; the rest would be a spoiler.",
                 containsSpoilers = false,
-                verified = true
+                verified = true,
+                grounded = true
             ),
             script.ask(SpoilerPolicy.NO_SPOILERS_BEST_EFFORT)
         )
@@ -259,7 +347,7 @@ class BookQuestionPipelineTest {
     fun `after declining spoilers a spoiler is rewritten`() {
         val script = Script(listOf("He becomes emperor.", "The rest would be a spoiler."), listOf(spoiler, unhelpful))
         assertEquals(
-            QuestionResult.Answered("The rest would be a spoiler.", containsSpoilers = false, verified = true),
+            QuestionResult.Answered("The rest would be a spoiler.", containsSpoilers = false, verified = true, grounded = true),
             script.ask(SpoilerPolicy.NO_SPOILERS_BEST_EFFORT)
         )
     }
