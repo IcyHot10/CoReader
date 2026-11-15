@@ -70,6 +70,15 @@ class ChapterTitlesTest {
     }
 
     @Test
+    fun `a position belongs to a book only if it points at one of its files`() {
+        val files = listOf("text/ch1.xhtml", "text/ch2.xhtml")
+        assertEquals(true, ChapterTitles.contains(files, "text/ch2.xhtml"))
+        assertEquals(true, ChapterTitles.contains(files, "text/ch2.xhtml#para-9"))
+        assertEquals(false, ChapterTitles.contains(files, "OEBPS/part0007.html"))
+        assertEquals(false, ChapterTitles.contains(emptyList(), "text/ch1.xhtml"))
+    }
+
+    @Test
     fun `a book with no table of contents has no titles`() {
         assertEquals(listOf("", ""), ChapterTitles.byReadingOrder(emptyList(), listOf("a.xhtml", "b.xhtml")))
     }

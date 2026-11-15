@@ -20,6 +20,15 @@ object ChapterTitles {
     fun resourceKey(href: String): String = href.substringBefore('#')
 
     /**
+     * Whether [href] points into a book whose files are [readingOrder]. A saved position that
+     * does not is from some other book and must not be used to open, or be saved against, this one.
+     */
+    fun contains(readingOrder: List<String>, href: String): Boolean {
+        val key = resourceKey(href)
+        return readingOrder.any { resourceKey(it) == key }
+    }
+
+    /**
      * The chapter title for each entry of [readingOrder] (hrefs), in the same order.
      *
      * A file without its own table-of-contents entry is treated as a continuation of the last

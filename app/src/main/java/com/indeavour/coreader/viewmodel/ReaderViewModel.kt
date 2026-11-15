@@ -652,17 +652,63 @@ class ReaderViewModel(
         }
     }
 
-    fun updateProgress(pageIndex: Int, totalPages: Int, locator: Locator) {
+    /** The last position that arrived with page numbers, so it is not handled a second time. */
+    private var lastPagedLocator: Locator? = null
+
+    /**
+     * The reader moved to a page of a normal, reflowing book: [pageIndex] (zero-based) of
+     * [totalPages] in the current chapter.
+     */
+    fun updateProgress(source: Publication, pageIndex: Int, totalPages: Int, locator: Locator) {
+        if (source !== _publication.value) return // From a reader still showing the previous book.
+        lastPagedLocator = locator
+        applyProgress(locator, pageIndex, totalPages)
+    }
+
+    /**
+     * The reader's position changed. This is reported for every kind of book, whereas page
+     * numbers ([updateProgress]) only come for reflowing ones: a fixed-layout book (comics,
+     * picture books, some textbooks) never reports them, and without this its progress, footer
+     * and slider would never update.
+     */
+    fun onLocatorChanged(source: Publication, locator: Locator) {
+        if (source !== _publication.value) return // From a reader still showing the previous book.
+        // A reflowing book reports the same position both ways; the one with page numbers wins.
+        if (locator == lastPagedLocator) return
+        applyProgress(locator, pageIndex = null, totalPages = null)
+    }
+
+    private fun belongsTo(pub: Publication, locator: Locator): Boolean =
+        ChapterTitles.contains(pub.readingOrder.map { it.url().toString() }, locator.href.toString())
+
+    private fun applyProgress(locator: Locator, pageIndex: Int?, totalPages: Int?) {
         val pub = _publication.value ?: return
+        // A position that is not in this book must never be shown as, or saved as, its progress.
+        if (!belongsTo(pub, locator)) return
         val chapterLabel = chapterTitleFor(pub, locator)
 
-        val progression = locator.locations.totalProgression?.toFloat() ?: (pageIndex.toFloat() / (totalPages - 1).coerceAtLeast(1))
+        // Without page numbers, fall back on the book-wide position, which every book has.
+        val position = locator.locations.position
+        val positionCount = positions.size
+        val progression = locator.locations.totalProgression?.toFloat()
+            ?: if (pageIndex != null && totalPages != null) {
+                pageIndex.toFloat() / (totalPages - 1).coerceAtLeast(1)
+            } else if (position != null && positionCount > 1) {
+                (position - 1).toFloat() / (positionCount - 1)
+            } else {
+                0f
+            }
+        val pageLabel = when {
+            pageIndex != null && totalPages != null -> "Page ${pageIndex + 1} of $totalPages"
+            position != null && positionCount > 0 -> "Page $position of $positionCount"
+            else -> ""
+        }
         val percentage = (progression * 100).coerceIn(0f, 100f)
         val isCompletedNow = progression >= COMPLETION_THRESHOLD
 
         _progress.value = ReadingProgress(
             value = progression,
-            pageLabel = "Page ${pageIndex + 1} of $totalPages",
+            pageLabel = pageLabel,
             percentageLabel = if (percentage > 99.5f) "100%" else "${kotlin.math.round(percentage).toInt()}%",
             chapterLabel = chapterLabel
         )
@@ -674,7 +720,11 @@ class ReaderViewModel(
         // it stays on the current page.
         _initialLocator.value = locator
         currentLocator = locator
-        currentPageEnd = ReadSoFar.endOfPage(pageIndex, totalPages, locator.locations.progression ?: 0.0)
+        currentPageEnd = if (pageIndex != null && totalPages != null) {
+            ReadSoFar.endOfPage(pageIndex, totalPages, locator.locations.progression ?: 0.0)
+        } else {
+            null
+        }
 
         // While the reader is only visiting another part of the book, the saved position stays
         // where they were actually reading.
@@ -687,10 +737,14 @@ class ReaderViewModel(
 
     /** Saves the reading position to Room; done on every page turn. */
     private fun saveProgressionLocally(locator: Locator) {
+        // Saved against the book this reader has open. It used to go to whichever book was
+        // flagged active, and the library flags the next book active before this reader has let
+        // go of the previous one, so the previous book's position could be written into it.
+        val bookId = loadedBookId ?: return
         viewModelScope.launch {
             val database = AppRoomDatabase.getDatabase(getApplication())
             val now = System.currentTimeMillis()
-            database.bookDao().updateActiveBookProgression(locator.toJSON().toString(), now)
+            database.bookDao().updateProgressionById(bookId, locator.toJSON().toString(), now)
         }
     }
 
@@ -921,6 +975,7 @@ class ReaderViewModel(
                 bookTextFor = null
                 bookIndex = null
                 bookIndexFor = null
+                lastPagedLocator = null
                 currentPageEnd = null
                 currentLocator = null
                 positions = emptyList()
@@ -952,11 +1007,11 @@ class ReaderViewModel(
 
             loadedBookId = activeBook.id
 
-            val progressionToUse = storedProgression(uid, userModel, bookKey, activeBook, resolvedGroupId)
-            val initialProgress = progressionToUse?.let { progressionOf(it) } ?: 0f
+            val savedPositions = storedProgression(uid, userModel, bookKey, activeBook, resolvedGroupId)
+            val initialProgress = savedPositions.firstOrNull()?.let { progressionOf(it) } ?: 0f
 
             startReadingSession(initialProgress)
-            openBook(bookFile, progression = progressionToUse)
+            openBook(bookFile, savedPositions)
 
             if (uid != null) {
                 // Annotations come from the book's own subcollection in both modes; only the
@@ -1006,7 +1061,7 @@ class ReaderViewModel(
 
     /**
      * Compares local Room progression timestamp vs remote Firebase progression timestamp
-     * and returns the progression from whichever is newer.
+     * and returns the progression from whichever is newer, followed by the older one.
      */
     private suspend fun storedProgression(
         uid: String?,
@@ -1014,7 +1069,7 @@ class ReaderViewModel(
         bookKey: String,
         activeBook: com.indeavour.coreader.model.room.RoomBook,
         resolvedGroupId: String
-    ): String? {
+    ): List<String> {
         val remoteBook: BookModel? = userModel?.books?.get(bookKey)
             ?: if (uid != null && resolvedGroupId != NO_GROUP) {
                 try {
@@ -1053,7 +1108,9 @@ class ReaderViewModel(
             }
         }
 
-        return chosenProgress
+        // The preferred position first, then the other copy in case the first turns out not to
+        // belong to this book.
+        return listOfNotNull(chosenProgress, if (isFromRemote) localProgress else remoteProgress).distinct()
     }
 
     private fun progressionOf(locatorJson: String): Float = try {
@@ -1185,8 +1242,9 @@ class ReaderViewModel(
         }
     }
 
-    private fun openBook(file: File, progression: String? = null) {
-        Log.d("ReaderViewModel", "openBook: ${file.absolutePath}, progression: $progression")
+    /** [savedPositions] are locator JSON, most trusted first; the first that fits the book is used. */
+    private fun openBook(file: File, savedPositions: List<String> = emptyList()) {
+        Log.d("ReaderViewModel", "openBook: ${file.absolutePath}, saved positions: ${savedPositions.size}")
         if (!hasEverLoaded) {
             _isBookReady.value = false
         }
@@ -1195,15 +1253,18 @@ class ReaderViewModel(
                 .onSuccess { pub ->
                     Log.d("ReaderViewModel", "Book opened successfully: ${pub.metadata.title}")
 
-                    val locator = if (progression != null) {
-                        try {
-                            Locator.fromJSON(org.json.JSONObject(progression))
+                    // A saved position pointing at a file this book does not have came from
+                    // another book. Opening at it leaves the reader unable to report where it is,
+                    // so it is skipped, and the book starts from the beginning if none fits.
+                    val locator = savedPositions.firstNotNullOfOrNull { json ->
+                        val parsed = try {
+                            Locator.fromJSON(org.json.JSONObject(json))
                         } catch (e: Exception) {
-                            Log.e("ReaderViewModel", "Failed to parse initial progression JSON", e)
+                            Log.e("ReaderViewModel", "Failed to parse saved position", e)
                             null
                         }
-                    } else {
-                        null
+                        parsed?.takeIf { belongsTo(pub, it) }
+                            .also { if (parsed != null && it == null) Log.w("ReaderViewModel", "Ignoring a saved position from another book: ${parsed.href}") }
                     }
 
                     _initialLocator.value = locator
@@ -1217,6 +1278,9 @@ class ReaderViewModel(
                         Log.e("ReaderViewModel", "Failed to compute positions", e)
                         emptyList()
                     }
+                    // A book without page numbers labels its pages from these, so refresh the
+                    // footer now that they are known.
+                    currentLocator?.takeIf { it != lastPagedLocator }?.let { applyProgress(it, null, null) }
                 }.onFailure {
                     Log.e("ReaderViewModel", "Failed to open book", it)
                     _error.value = it.message

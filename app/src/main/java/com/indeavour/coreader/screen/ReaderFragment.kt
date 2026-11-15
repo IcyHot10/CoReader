@@ -360,6 +360,14 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         LaunchedEffect(publication, isContainerReady) {
             if (isContainerReady && publication != null) {
                 showPublication(publication!!, colorScheme, viewModel.initialLocator.value)
+            } else if (publication == null) {
+                // The book is being swapped: take the old one off screen straight away, so it
+                // stops reporting positions and is not briefly shown as the new book.
+                locatorJob?.cancel()
+                shownPublication = null
+                childFragmentManager.findFragmentByTag("navigator")?.let {
+                    childFragmentManager.beginTransaction().remove(it).commitAllowingStateLoss()
+                }
             }
         }
 
@@ -1647,6 +1655,11 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
 
     private val decorationMutex = Mutex()
 
+    private var locatorJob: kotlinx.coroutines.Job? = null
+
+    /** The book the navigator currently on screen was created for. */
+    private var shownPublication: Publication? = null
+
     private var onToggleInterface: (() -> Unit)? = null
     private var onShowNoteDialog: ((Locator) -> Unit)? = null
     private var onShowReplyDialog: ((ReaderViewModel.NoteData) -> Unit)? = null
@@ -1656,6 +1669,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
         colorScheme: androidx.compose.material3.ColorScheme? = null,
         initialLocator: org.readium.r2.shared.publication.Locator? = null
     ) {
+        shownPublication = publication
         if (!viewModel.hasEverLoaded) {
             viewModel.setBookReady(false)
         }
@@ -1750,6 +1764,14 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
             }
             // Register decoration listener
             navigator?.addDecorationListener("highlights", this@ReaderFragment)
+            // Follow the reader's position directly. Page-number reports (onPageChanged) only
+            // come for reflowing books, so a fixed-layout book would otherwise show no progress.
+            locatorJob?.cancel()
+            locatorJob = navigator?.let { current ->
+                viewLifecycleOwner.lifecycleScope.launch {
+                    current.currentLocator.collect { viewModel.onLocatorChanged(publication, it) }
+                }
+            }
             // Hand the navigator the annotations before any chapter has loaded, so it draws
             // them itself as each chapter loads.
             applyAnnotations(viewModel.highlights.value, viewModel.notes.value)
@@ -1882,7 +1904,10 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
     }
 
     override fun onPageChanged(pageIndex: Int, totalPages: Int, locator: Locator) {
-        viewModel.updateProgress(pageIndex, totalPages, locator)
+        // Tagged with the book this reader is showing, so a report that arrives while the next
+        // book is opening is not mistaken for that book's position.
+        val source = shownPublication ?: return
+        viewModel.updateProgress(source, pageIndex, totalPages, locator)
 
         // Readium only reports a page once the current resource is fully laid out and has been
         // scrolled to the initial locator, so the first report means the page is settled.
