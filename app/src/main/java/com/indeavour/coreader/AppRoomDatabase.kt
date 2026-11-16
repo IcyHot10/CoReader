@@ -18,7 +18,7 @@ import com.indeavour.coreader.model.room.UserPreferences
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-@Database(entities = [RoomBook::class, UserPreferences::class, ReadingActivity::class], version = 11, exportSchema = false)
+@Database(entities = [RoomBook::class, UserPreferences::class, ReadingActivity::class], version = AppRoomDatabase.VERSION, exportSchema = true)
 abstract class AppRoomDatabase: RoomDatabase() {
     abstract fun bookDao(): RoomBookDao
     abstract fun userPreferencesDao(): UserPreferencesDao
@@ -26,6 +26,16 @@ abstract class AppRoomDatabase: RoomDatabase() {
 
     companion object {
         private const val TAG = "AppRoomDatabase"
+
+        /**
+         * Raising this needs a migration from the previous version added to [MIGRATIONS]. Without
+         * one the app fails to open the library, and a unit test fails first; it used to carry on
+         * by silently deleting every book, position and reading record on the device.
+         */
+        const val VERSION = 11
+
+        /** Versions older than this were never given migrations, and still start afresh. */
+        const val FIRST_MIGRATED_VERSION = 4
 
         /** Open databases by file name, one per account that has been signed in this run. */
         private val instances = ConcurrentHashMap<String, AppRoomDatabase>()
@@ -76,6 +86,10 @@ abstract class AppRoomDatabase: RoomDatabase() {
             }
         }
 
+        internal val MIGRATIONS: Array<Migration> = arrayOf(
+            MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11
+        )
+
         /**
          * The library of whoever is signed in. Each account has its own database file, so one
          * person's books, progress and reading history are never shown to the next.
@@ -91,8 +105,11 @@ abstract class AppRoomDatabase: RoomDatabase() {
                 instances[name] ?: run {
                     claimLegacyDatabase(context.applicationContext, name)
                     Room.databaseBuilder(context.applicationContext, AppRoomDatabase::class.java, name)
-                        .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
-                        .fallbackToDestructiveMigration(dropAllTables = true)
+                        .addMigrations(*MIGRATIONS)
+                        .fallbackToDestructiveMigrationFrom(
+                            dropAllTables = true,
+                            *(1 until FIRST_MIGRATED_VERSION).toList().toIntArray()
+                        )
                         .build().also { instances[name] = it }
                 }
             }

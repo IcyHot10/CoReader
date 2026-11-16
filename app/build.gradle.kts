@@ -43,6 +43,12 @@ android {
     }
 }
 
+// Writes the database layout of each version to app/schemas, which is committed. A change to
+// the layout then shows up in review, and each version's layout is on record for migrations.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
 
     implementation(libs.androidx.core.ktx)
