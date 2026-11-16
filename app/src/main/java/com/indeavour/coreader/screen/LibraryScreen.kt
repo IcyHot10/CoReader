@@ -146,6 +146,8 @@ import org.readium.r2.streamer.parser.DefaultPublicationParser
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.UUID
+import com.indeavour.coreader.domain.ImportFileNames
 import kotlinx.coroutines.CancellationException
 import kotlin.coroutines.CoroutineContext
 
@@ -838,6 +840,13 @@ fun MoreMenu(
                     // Resolved first, so a failure can still say which file it was.
                     val fileName = runCatching { AppUtils.getFileName(context, uri) }
                         .getOrElse { "book_${System.currentTimeMillis()}.epub" }
+                    // Stored under generated names: the original file name and the title are both
+                    // things two different books can share, and sharing one meant sharing the file.
+                    val importId = UUID.randomUUID().toString()
+                    val destFile = File(context.filesDir, ImportFileNames.book(fileName, importId))
+                    var coverPath: String? = null
+                    // Set once the library points at the copy; until then it is ours to clean up.
+                    var keepFiles = false
                     // One bad file must not take the app down, or stop the other files selected with it.
                     try {
                         val httpClient = DefaultHttpClient()
@@ -855,8 +864,6 @@ fun MoreMenu(
                         )
                         val inputStream = context.contentResolver.openInputStream(uri)
                             ?: throw IOException("The provider returned no data for $uri")
-
-                        val destFile = File(context.filesDir, fileName)
                         inputStream.use { input ->
                             FileOutputStream(destFile).use { output ->
                                 input.copyTo(output)
@@ -884,6 +891,7 @@ fun MoreMenu(
                                         val now = System.currentTimeMillis()
                                         val progressTimestamp = firebaseBook?.progressionUpdatedTimestamp ?: now
                                         database.bookDao().restoreBook(existingBook.id, destFile.absolutePath, uri.toString())
+                                        keepFiles = true
                                         database.bookDao().updateProgressionByTitleAndAuthor(title, author, progress, progressTimestamp)
                                         userViewModel.addBook(BookModel(title, author, progress, progressionUpdatedTimestamp = progressTimestamp), { success, message ->
                                             CoroutineScope(Dispatchers.Main).launch {
@@ -898,15 +906,18 @@ fun MoreMenu(
                                 } else {
                                     val now = System.currentTimeMillis()
                                     val progressTimestamp = firebaseBook?.progressionUpdatedTimestamp ?: now
+                                    // A cover that cannot be saved costs the book its cover, not the import.
+                                    coverPath = publication.cover()?.let { bitmap ->
+                                        runCatching {
+                                            AppUtils.saveBitmapToInternalStorage(context, bitmap, ImportFileNames.cover(importId))
+                                        }
+                                            .onFailure { Log.e("IMPORT", "Could not save the cover of $fileName", it) }
+                                            .getOrNull()
+                                    }
                                     database.bookDao().insert(RoomBook(
                                         title = title,
                                         author = author,
-                                        // A cover that cannot be saved costs the book its cover, not the import.
-                                    cover = publication.cover()?.let { bitmap ->
-                                        runCatching { AppUtils.saveBitmapToInternalStorage(context, bitmap, title) }
-                                            .onFailure { Log.e("IMPORT", "Could not save the cover of $fileName", it) }
-                                            .getOrNull()
-                                    },
+                                        cover = coverPath,
                                         filePath = destFile.absolutePath,
                                         isFavourite = false,
                                         uri = uri.toString(),
@@ -914,6 +925,7 @@ fun MoreMenu(
                                         progressionUpdatedTimestamp = progressTimestamp,
                                         addedTimestamp = now
                                     ))
+                                    keepFiles = true
                                     userViewModel.addBook(BookModel(title, author, progress, progressionUpdatedTimestamp = progressTimestamp, addedTimestamp = now), { success, message ->
                                         CoroutineScope(Dispatchers.Main).launch {
                                             AppUtils.showToast(context, message)
@@ -928,6 +940,12 @@ fun MoreMenu(
                         Log.e("IMPORT", "Failed to import $uri", e)
                         withContext(Dispatchers.Main) {
                             AppUtils.showToast(context, "Failed to import $fileName")
+                        }
+                    } finally {
+                        // A failed import, or a book already in the library, leaves nothing behind.
+                        if (!keepFiles) {
+                            destFile.delete()
+                            coverPath?.let { File(it).delete() }
                         }
                     }
                 }
