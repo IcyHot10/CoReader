@@ -773,7 +773,24 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                             thumbColor = colorScheme.secondary,
                                             activeTrackColor = colorScheme.secondary,
                                             inactiveTrackColor = colorScheme.secondary.copy(alpha = 0.35f)
-                                        )
+                                        ),
+                                        track = { sliderState ->
+                                            SliderDefaults.Track(
+                                                sliderState = sliderState,
+                                                modifier = Modifier.height(4.dp),
+                                                colors = SliderDefaults.colors(
+                                                    activeTrackColor = colorScheme.secondary,
+                                                    inactiveTrackColor = colorScheme.secondary.copy(alpha = 0.35f)
+                                                )
+                                            )
+                                        },
+                                        thumb = {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(16.dp)
+                                                    .background(colorScheme.secondary, CircleShape)
+                                            )
+                                        }
                                     )
 
                                     Row(
