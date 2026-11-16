@@ -145,6 +145,8 @@ import org.readium.r2.streamer.PublicationOpener
 import org.readium.r2.streamer.parser.DefaultPublicationParser
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlin.coroutines.CoroutineContext
 
 
@@ -833,80 +835,99 @@ fun MoreMenu(
         onResult = { uris: List<Uri> ->
             uris.forEach { uri ->
                 CoroutineScope(Dispatchers.IO).launch {
-                    val httpClient = DefaultHttpClient()
-                    val assetRetriever = AssetRetriever(
-                        contentResolver = context.contentResolver,
-                        httpClient = httpClient
-                    )
-                    val publicationOpener = PublicationOpener(
-                        publicationParser = DefaultPublicationParser(
-                            context,
-                            httpClient = httpClient,
-                            assetRetriever = assetRetriever,
-                            pdfFactory = PdfiumDocumentFactory(context)
+                    // Resolved first, so a failure can still say which file it was.
+                    val fileName = runCatching { AppUtils.getFileName(context, uri) }
+                        .getOrElse { "book_${System.currentTimeMillis()}.epub" }
+                    // One bad file must not take the app down, or stop the other files selected with it.
+                    try {
+                        val httpClient = DefaultHttpClient()
+                        val assetRetriever = AssetRetriever(
+                            contentResolver = context.contentResolver,
+                            httpClient = httpClient
                         )
-                    )
-                    val inputStream = context.contentResolver.openInputStream(uri)!!
+                        val publicationOpener = PublicationOpener(
+                            publicationParser = DefaultPublicationParser(
+                                context,
+                                httpClient = httpClient,
+                                assetRetriever = assetRetriever,
+                                pdfFactory = PdfiumDocumentFactory(context)
+                            )
+                        )
+                        val inputStream = context.contentResolver.openInputStream(uri)
+                            ?: throw IOException("The provider returned no data for $uri")
 
-                    val destFile = File(context.filesDir, AppUtils.getFileName(context, uri))
-                    inputStream.use { input ->
-                        FileOutputStream(destFile).use { output ->
-                            input.copyTo(output)
+                        val destFile = File(context.filesDir, fileName)
+                        inputStream.use { input ->
+                            FileOutputStream(destFile).use { output ->
+                                input.copyTo(output)
+                            }
                         }
-                    }
-                    val asset = assetRetriever.retrieve(destFile)
-                        .getOrElse {
-                            Log.e("ASSET", it.message.toString())
-                            withContext(Dispatchers.Main){AppUtils.showToast(context, "Failed to import $uri")}
-                        }
-                    if (asset is Asset){
-                        val publication = publicationOpener.open(asset, allowUserInteraction = true)
-                            .getOrElse { withContext(Dispatchers.Main){AppUtils.showToast(context, "Failed to import $uri")} }
-                        if (publication is Publication){
-                            val title = publication.metadata.title ?: "Untitled Book"
-                            val author = publication.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
-                            val bookKey = "${title}_${author}"
-                            val firebaseBook = user?.books?.get(bookKey)
-                            val progress = firebaseBook?.progress ?: ""
+                        val asset = assetRetriever.retrieve(destFile)
+                            .getOrElse {
+                                Log.e("ASSET", it.message.toString())
+                                withContext(Dispatchers.Main){AppUtils.showToast(context, "Failed to import $fileName")}
+                            }
+                        if (asset is Asset){
+                            val publication = publicationOpener.open(asset, allowUserInteraction = true)
+                                .getOrElse { withContext(Dispatchers.Main){AppUtils.showToast(context, "Failed to import $fileName")} }
+                            if (publication is Publication){
+                                val title = publication.metadata.title ?: "Untitled Book"
+                                val author = publication.metadata.authors.firstOrNull()?.name ?: "Unknown Author"
+                                val bookKey = "${title}_${author}"
+                                val firebaseBook = user?.books?.get(bookKey)
+                                val progress = firebaseBook?.progress ?: ""
 
-                            val existingBook = database.bookDao().findByTitleAndAuthor(title, author)
+                                val existingBook = database.bookDao().findByTitleAndAuthor(title, author)
 
-                            if (existingBook != null) {
-                                if (existingBook.isDeleted) {
+                                if (existingBook != null) {
+                                    if (existingBook.isDeleted) {
+                                        val now = System.currentTimeMillis()
+                                        val progressTimestamp = firebaseBook?.progressionUpdatedTimestamp ?: now
+                                        database.bookDao().restoreBook(existingBook.id, destFile.absolutePath, uri.toString())
+                                        database.bookDao().updateProgressionByTitleAndAuthor(title, author, progress, progressTimestamp)
+                                        userViewModel.addBook(BookModel(title, author, progress, progressionUpdatedTimestamp = progressTimestamp), { success, message ->
+                                            CoroutineScope(Dispatchers.Main).launch {
+                                                AppUtils.showToast(context, message)
+                                            }
+                                        })
+                                    } else {
+                                        withContext(Dispatchers.Main) {
+                                            AppUtils.showToast(context, "Book is already in the library")
+                                        }
+                                    }
+                                } else {
                                     val now = System.currentTimeMillis()
                                     val progressTimestamp = firebaseBook?.progressionUpdatedTimestamp ?: now
-                                    database.bookDao().restoreBook(existingBook.id, destFile.absolutePath, uri.toString())
-                                    database.bookDao().updateProgressionByTitleAndAuthor(title, author, progress, progressTimestamp)
-                                    userViewModel.addBook(BookModel(title, author, progress, progressionUpdatedTimestamp = progressTimestamp), { success, message ->
+                                    database.bookDao().insert(RoomBook(
+                                        title = title,
+                                        author = author,
+                                        // A cover that cannot be saved costs the book its cover, not the import.
+                                    cover = publication.cover()?.let { bitmap ->
+                                        runCatching { AppUtils.saveBitmapToInternalStorage(context, bitmap, title) }
+                                            .onFailure { Log.e("IMPORT", "Could not save the cover of $fileName", it) }
+                                            .getOrNull()
+                                    },
+                                        filePath = destFile.absolutePath,
+                                        isFavourite = false,
+                                        uri = uri.toString(),
+                                        progression = progress,
+                                        progressionUpdatedTimestamp = progressTimestamp,
+                                        addedTimestamp = now
+                                    ))
+                                    userViewModel.addBook(BookModel(title, author, progress, progressionUpdatedTimestamp = progressTimestamp, addedTimestamp = now), { success, message ->
                                         CoroutineScope(Dispatchers.Main).launch {
                                             AppUtils.showToast(context, message)
                                         }
                                     })
-                                } else {
-                                    withContext(Dispatchers.Main) {
-                                        AppUtils.showToast(context, "Book is already in the library")
-                                    }
                                 }
-                            } else {
-                                val now = System.currentTimeMillis()
-                                val progressTimestamp = firebaseBook?.progressionUpdatedTimestamp ?: now
-                                database.bookDao().insert(RoomBook(
-                                    title = title,
-                                    author = author,
-                                    cover = publication.cover()?.let { AppUtils.saveBitmapToInternalStorage(context, it, title) },
-                                    filePath = destFile.absolutePath,
-                                    isFavourite = false,
-                                    uri = uri.toString(),
-                                    progression = progress,
-                                    progressionUpdatedTimestamp = progressTimestamp,
-                                    addedTimestamp = now
-                                ))
-                                userViewModel.addBook(BookModel(title, author, progress, progressionUpdatedTimestamp = progressTimestamp, addedTimestamp = now), { success, message ->
-                                    CoroutineScope(Dispatchers.Main).launch {
-                                        AppUtils.showToast(context, message)
-                                    }
-                                })
                             }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.e("IMPORT", "Failed to import $uri", e)
+                        withContext(Dispatchers.Main) {
+                            AppUtils.showToast(context, "Failed to import $fileName")
                         }
                     }
                 }
