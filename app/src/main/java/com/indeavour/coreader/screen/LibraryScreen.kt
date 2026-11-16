@@ -843,7 +843,15 @@ fun MoreMenu(
                     // Stored under generated names: the original file name and the title are both
                     // things two different books can share, and sharing one meant sharing the file.
                     val importId = UUID.randomUUID().toString()
-                    val destFile = File(context.filesDir, ImportFileNames.book(fileName, importId))
+                    // Each account keeps its books in its own folder.
+                    val accountDir = AppUtils.accountFilesDir(context)
+                    if (accountDir == null) {
+                        withContext(Dispatchers.Main) {
+                            AppUtils.showToast(context, "Sign in to import books")
+                        }
+                        return@launch
+                    }
+                    val destFile = File(accountDir, ImportFileNames.book(fileName, importId))
                     var coverPath: String? = null
                     // Set once the library points at the copy; until then it is ours to clean up.
                     var keepFiles = false
@@ -909,7 +917,7 @@ fun MoreMenu(
                                     // A cover that cannot be saved costs the book its cover, not the import.
                                     coverPath = publication.cover()?.let { bitmap ->
                                         runCatching {
-                                            AppUtils.saveBitmapToInternalStorage(context, bitmap, ImportFileNames.cover(importId))
+                                            AppUtils.saveBitmapToInternalStorage(accountDir, bitmap, ImportFileNames.cover(importId))
                                         }
                                             .onFailure { Log.e("IMPORT", "Could not save the cover of $fileName", it) }
                                             .getOrNull()

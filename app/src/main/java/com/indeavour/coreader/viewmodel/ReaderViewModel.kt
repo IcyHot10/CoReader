@@ -446,6 +446,9 @@ class ReaderViewModel(
 
     private var loadedBookId: Int? = null
     private var loadedGroupId: String? = NO_GROUP
+
+    /** The account the open book was loaded for. */
+    private var loadedUid: String? = null
     private var groupBookListener: ListenerRegistration? = null
     private var groupInfoListener: ListenerRegistration? = null
     private var annotationsListener: ListenerRegistration? = null
@@ -897,8 +900,64 @@ class ReaderViewModel(
         }
     }
 
+    /** Lets go of the open book and everything loaded for it. */
+    private fun clearLoadedBook() {
+        groupBookListener?.remove()
+        groupBookListener = null
+        groupInfoListener?.remove()
+        groupInfoListener = null
+        annotationsListener?.remove()
+        annotationsListener = null
+        _isAdmin.value = false
+        _memberColours.value = emptyMap()
+        _publication.value = null
+        _isBookReady.value = false
+        hasEverLoaded = false
+        _progress.value = ReadingProgress()
+        _initialLocator.value = null
+        _highlights.value = emptyList()
+        _notes.value = emptyList()
+        _groupProgress.value = emptyList()
+        clearReturnPoint()
+        _bookChat.value = emptyList()
+        bookText = null
+        bookTextFor = null
+        bookIndex = null
+        bookIndexFor = null
+        lastPagedLocator = null
+        currentPageEnd = null
+        currentLocator = null
+        positions = emptyList()
+        _isGroupBook.value = false
+    }
+
+    /**
+     * This view model lives as long as the activity, so it outlives a sign-out. Without this the
+     * previous account's book, its listeners and its unsent reading time would still be here
+     * when the next person signs in.
+     */
+    private val authListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+        if (loadedBookId != null && firebaseAuth.currentUser?.uid != loadedUid) {
+            Log.d("ReaderViewModel", "Account changed, releasing the open book")
+            sessionTimer.pause()
+            clearLoadedBook()
+            loadedBookId = null
+            loadedGroupId = NO_GROUP
+            loadedUid = null
+            lastLocator = null
+            unsyncedSeconds = 0
+            unsyncedCompletion = false
+            _error.value = null
+        }
+    }
+
+    init {
+        auth.addAuthStateListener(authListener)
+    }
+
     override fun onCleared() {
         super.onCleared()
+        auth.removeAuthStateListener(authListener)
         groupBookListener?.remove()
         groupInfoListener?.remove()
         annotationsListener?.remove()
@@ -946,39 +1005,17 @@ class ReaderViewModel(
                 _theme.value = it.theme
             }
 
-            // If it's a different book OR the resolved active group has changed, clear state immediately
-            if (activeBook.id != loadedBookId || resolvedGroupId != loadedGroupId) {
+            // If it's a different book OR the resolved active group has changed, clear state immediately.
+            // A book id only means something within one account's library, so the same id under
+            // another account is a different book too.
+            if (activeBook.id != loadedBookId || resolvedGroupId != loadedGroupId || uid != loadedUid) {
                 Log.d("ReaderViewModel", "Switching book/group: book ${loadedBookId}->${activeBook.id}, group ${loadedGroupId}->${resolvedGroupId}")
                 if (loadedBookId != null) {
                     endReadingSession()
                 }
-                groupBookListener?.remove()
-                groupBookListener = null
-                groupInfoListener?.remove()
-                groupInfoListener = null
-                annotationsListener?.remove()
-                annotationsListener = null
-                _isAdmin.value = false
-                _memberColours.value = emptyMap()
+                clearLoadedBook()
                 _isGroupBook.value = resolvedGroupId != NO_GROUP
-                _publication.value = null
-                _isBookReady.value = false
-                hasEverLoaded = false
-                _progress.value = ReadingProgress()
-                _initialLocator.value = null
-                _highlights.value = emptyList()
-                _notes.value = emptyList()
-                _groupProgress.value = emptyList()
-                clearReturnPoint()
-                _bookChat.value = emptyList()
-                bookText = null
-                bookTextFor = null
-                bookIndex = null
-                bookIndexFor = null
-                lastPagedLocator = null
-                currentPageEnd = null
-                currentLocator = null
-                positions = emptyList()
+                loadedUid = uid
                 loadedGroupId = resolvedGroupId
 
                 // Start listening to group info if in a group

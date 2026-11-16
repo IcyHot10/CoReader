@@ -5,6 +5,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.google.firebase.auth.FirebaseAuth
+import com.indeavour.coreader.domain.AccountStorage
 import com.indeavour.coreader.model.room.RoomBook
 import java.io.File
 import java.io.FileOutputStream
@@ -26,8 +28,19 @@ object AppUtils{
         return name
     }
 
-    fun saveBitmapToInternalStorage(context: Context, bitmap: Bitmap, fileName: String): String {
-        val file = File(context.filesDir, "$fileName.png")
+    /**
+     * The folder the signed-in account's imported books and covers are kept in, or null when
+     * nobody is signed in. Books imported before accounts had their own folder stay where they
+     * were; the library records each file's full path, so they still open.
+     */
+    fun accountFilesDir(context: Context): File? {
+        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return null
+        val root = File(context.filesDir, AccountStorage.FILES_ROOT)
+        return File(root, AccountStorage.filesFolder(uid)).apply { mkdirs() }
+    }
+
+    fun saveBitmapToInternalStorage(directory: File, bitmap: Bitmap, fileName: String): String {
+        val file = File(directory, "$fileName.png")
         FileOutputStream(file).use { out ->
             bitmap.compress(Bitmap.CompressFormat.PNG, 90, out)
         }
