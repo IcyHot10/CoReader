@@ -10,6 +10,7 @@ import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Companion.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthInvalidUserException
 import com.google.firebase.auth.GoogleAuthProvider
 import com.indeavour.coreader.repository.UserRepository
 import com.indeavour.coreader.R
@@ -124,12 +125,24 @@ class AuthViewModel : ViewModel() {
         }
     }
 
-    fun forgotPassword(){
-
-    }
-
-    fun resetPassword(){
-
+    /**
+     * Emails a link for choosing a new password. An address with no account is reported the same
+     * way as one with an account, so this cannot be used to find out who has signed up.
+     */
+    fun sendPasswordReset(email: String, onResult: (Boolean, String) -> Unit) {
+        val address = email.trim()
+        if (address.isEmpty()) {
+            onResult(false, "Enter your email address")
+            return
+        }
+        auth.sendPasswordResetEmail(address).addOnCompleteListener {
+            val error = it.exception
+            if (it.isSuccessful || error is FirebaseAuthInvalidUserException) {
+                onResult(true, "If $address has an account, a reset link is on its way")
+            } else {
+                onResult(false, error?.localizedMessage ?: "Could not send the reset email")
+            }
+        }
     }
 
     fun signOut(){}

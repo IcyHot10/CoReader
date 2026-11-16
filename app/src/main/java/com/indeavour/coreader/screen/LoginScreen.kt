@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -26,6 +27,7 @@ import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -35,6 +37,7 @@ import androidx.compose.material3.OutlinedSecureTextField
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -70,6 +73,14 @@ fun LoginScreen(routeToLibrary : () -> Unit, authViewModel: AuthViewModel = view
 
     val context = LocalContext.current
 
+    var showResetDialog by rememberSaveable { mutableStateOf(false) }
+
+    if (showResetDialog) {
+        PasswordResetDialog(
+            authViewModel = authViewModel,
+            onDismiss = { showResetDialog = false }
+        )
+    }
 
     Box(modifier = Modifier.background(MaterialTheme.colorScheme.tertiary)){
         Image(painter = painterResource(R.drawable.invis_background), contentDescription = null, contentScale = ContentScale.FillWidth, modifier = Modifier.fillMaxSize(), alignment = Alignment.TopCenter)
@@ -78,7 +89,7 @@ fun LoginScreen(routeToLibrary : () -> Unit, authViewModel: AuthViewModel = view
             if (isLogin) LoginCard(login = routeToLibrary, authViewModel = authViewModel) else RegisterCard( register = routeToLibrary, authViewModel = authViewModel)
             if (isLogin) {
                 Spacer(modifier = Modifier.height(10.dp))
-                Text("Forgot Password?", modifier = Modifier.clickable {}, color = MaterialTheme.colorScheme.onTertiary)
+                Text("Forgot Password?", modifier = Modifier.clickable { showResetDialog = true }, color = MaterialTheme.colorScheme.onTertiary)
             }
             Spacer(modifier = Modifier.height(20.dp))
             Text("Or sign in with", color = MaterialTheme.colorScheme.onTertiary)
@@ -97,6 +108,50 @@ fun LoginScreen(routeToLibrary : () -> Unit, authViewModel: AuthViewModel = view
         }
         if (isLogin) LoginText(Modifier.align(Alignment.BottomCenter).padding(WindowInsets.navigationBars.asPaddingValues())){setRegister()} else RegisterText(Modifier.align(Alignment.BottomCenter).padding(WindowInsets.navigationBars.asPaddingValues())){setLogin()}
     }
+}
+
+/** Asks for the account's email address and sends a password reset link to it. */
+@Composable
+fun PasswordResetDialog(authViewModel: AuthViewModel, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var email by rememberSaveable { mutableStateOf("") }
+    var isSending by remember { mutableStateOf(false) }
+    val isValid = Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Reset password") },
+        text = {
+            Column {
+                Text("Enter your email address and we'll send you a link to choose a new password.")
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    label = { Text("Email") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = isValid && !isSending,
+                onClick = {
+                    isSending = true
+                    authViewModel.sendPasswordReset(email) { success, message ->
+                        isSending = false
+                        AppUtils.showToast(context, message)
+                        if (success) onDismiss()
+                    }
+                }
+            ) { Text(if (isSending) "Sending..." else "Send link") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable
