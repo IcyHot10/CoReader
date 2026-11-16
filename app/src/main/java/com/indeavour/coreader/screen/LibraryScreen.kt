@@ -296,14 +296,18 @@ fun LibraryScreen(routeToLogin: () -> Unit, routeToBook: () -> Unit, routeToGrou
                             IconButton(onClick = {
                                 scope.launch(Dispatchers.IO) {
                                     selectedBookIds.forEach { id ->
-                                        val book = database.bookDao().getById(id)
-                                        book?.let {
-                                            val file = File(it.filePath)
-                                            if (file.exists()) {
-                                                file.delete()
-                                            }
-                                            database.bookDao().markAsDeleted(id)
+                                        val book = database.bookDao().getById(id) ?: return@forEach
+                                        database.bookDao().markAsDeleted(id)
+                                        // Books imported before files had generated names can
+                                        // share a file or a cover, so each is removed only once
+                                        // no other book in the library uses it.
+                                        if (book.filePath.isNotEmpty() && database.bookDao().countUsingFile(book.filePath) == 0) {
+                                            File(book.filePath).delete()
                                         }
+                                        book.cover?.let { cover ->
+                                            if (database.bookDao().countUsingCover(cover) == 0) File(cover).delete()
+                                        }
+                                        userViewModel.removeBook(book.title, book.author)
                                     }
                                     withContext(Dispatchers.Main) {
                                         isDeletionMode = false
@@ -894,11 +898,24 @@ fun MoreMenu(
 
                                 val existingBook = database.bookDao().findByTitleAndAuthor(title, author)
 
+                                // A cover that cannot be saved costs the book its cover, not the import.
+                                suspend fun saveCover(): String? {
+                                    coverPath = publication.cover()?.let { bitmap ->
+                                        runCatching {
+                                            AppUtils.saveBitmapToInternalStorage(accountDir, bitmap, ImportFileNames.cover(importId))
+                                        }
+                                            .onFailure { Log.e("IMPORT", "Could not save the cover of $fileName", it) }
+                                            .getOrNull()
+                                    }
+                                    return coverPath
+                                }
+
                                 if (existingBook != null) {
                                     if (existingBook.isDeleted) {
                                         val now = System.currentTimeMillis()
                                         val progressTimestamp = firebaseBook?.progressionUpdatedTimestamp ?: now
-                                        database.bookDao().restoreBook(existingBook.id, destFile.absolutePath, uri.toString())
+                                        // Deleting the book removed its cover, so it gets a fresh one.
+                                        database.bookDao().restoreBook(existingBook.id, destFile.absolutePath, uri.toString(), saveCover())
                                         keepFiles = true
                                         database.bookDao().updateProgressionByTitleAndAuthor(title, author, progress, progressTimestamp)
                                         userViewModel.addBook(BookModel(title, author, progress, progressionUpdatedTimestamp = progressTimestamp), { success, message ->
@@ -914,14 +931,7 @@ fun MoreMenu(
                                 } else {
                                     val now = System.currentTimeMillis()
                                     val progressTimestamp = firebaseBook?.progressionUpdatedTimestamp ?: now
-                                    // A cover that cannot be saved costs the book its cover, not the import.
-                                    coverPath = publication.cover()?.let { bitmap ->
-                                        runCatching {
-                                            AppUtils.saveBitmapToInternalStorage(accountDir, bitmap, ImportFileNames.cover(importId))
-                                        }
-                                            .onFailure { Log.e("IMPORT", "Could not save the cover of $fileName", it) }
-                                            .getOrNull()
-                                    }
+                                    saveCover()
                                     database.bookDao().insert(RoomBook(
                                         title = title,
                                         author = author,

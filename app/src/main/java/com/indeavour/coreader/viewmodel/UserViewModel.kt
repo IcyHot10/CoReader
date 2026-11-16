@@ -1,5 +1,6 @@
 package com.indeavour.coreader.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
@@ -94,6 +95,28 @@ class UserViewModel : ViewModel() {
                 }
             } catch (e: Exception) {
                 onResult(false, "Failed to update library: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Marks a book deleted in the cloud library, so stats stop counting it. The entry is kept:
+     * importing the book again picks its progress back up.
+     *
+     * Title and author are written with the flag so that an entry created by this write is still
+     * a complete book rather than a flag on its own.
+     */
+    fun removeBook(title: String, author: String) {
+        val uid = auth.currentUser?.uid ?: return
+        viewModelScope.launch {
+            try {
+                users.mergeBookFields(
+                    uid,
+                    "${title}_${author}",
+                    mapOf("title" to title, "author" to author, "isDeleted" to true)
+                )
+            } catch (e: Exception) {
+                Log.e("UserViewModel", "Failed to mark $title deleted in the cloud", e)
             }
         }
     }

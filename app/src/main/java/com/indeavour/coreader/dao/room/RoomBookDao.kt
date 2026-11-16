@@ -38,8 +38,9 @@ interface RoomBookDao {
     @Query("SELECT * FROM book WHERE title = :title AND author = :author LIMIT 1")
     suspend fun findByTitleAndAuthor(title: String, author: String): RoomBook?
 
-    @Query("UPDATE book SET is_deleted = 0, file_path = :filePath, uri = :uri WHERE id = :id")
-    suspend fun restoreBook(id: Int, filePath: String, uri: String)
+    /** Brings a deleted book back with the newly imported file and cover. */
+    @Query("UPDATE book SET is_deleted = 0, file_path = :filePath, uri = :uri, cover_path = :cover WHERE id = :id")
+    suspend fun restoreBook(id: Int, filePath: String, uri: String, cover: String?)
 
     @Insert
     suspend fun insert(book: RoomBook)
@@ -47,8 +48,17 @@ interface RoomBookDao {
     @Query("SELECT * FROM book WHERE id = :id LIMIT 1")
     suspend fun getById(id: Int): RoomBook?
 
-    @Query("UPDATE book SET is_deleted = 1, file_path = '' WHERE id = :id")
+    /** The row is kept, so a later re-import finds it; its file and cover are forgotten. */
+    @Query("UPDATE book SET is_deleted = 1, file_path = '', cover_path = NULL WHERE id = :id")
     suspend fun markAsDeleted(id: Int)
+
+    /** How many books in the library are stored in the file at [filePath]. */
+    @Query("SELECT COUNT(*) FROM book WHERE file_path = :filePath AND is_deleted = 0")
+    suspend fun countUsingFile(filePath: String): Int
+
+    /** How many books in the library show the cover at [coverPath]. */
+    @Query("SELECT COUNT(*) FROM book WHERE cover_path = :coverPath AND is_deleted = 0")
+    suspend fun countUsingCover(coverPath: String): Int
 
     @Query("UPDATE book SET is_favourite = :isFavourite WHERE id = :id")
     suspend fun setFavourite(id: Int, isFavourite: Boolean)
