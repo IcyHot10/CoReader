@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Swipe
 import androidx.compose.material.icons.filled.TextDecrease
 import androidx.compose.material.icons.filled.TextIncrease
 import androidx.compose.material3.*
@@ -771,7 +772,7 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                         colors = SliderDefaults.colors(
                                             thumbColor = colorScheme.secondary,
                                             activeTrackColor = colorScheme.secondary,
-                                            inactiveTrackColor = colorScheme.secondary.copy(alpha = 0.2f)
+                                            inactiveTrackColor = colorScheme.secondary.copy(alpha = 0.35f)
                                         )
                                     )
 
@@ -922,27 +923,73 @@ class ReaderFragment : Fragment(), EpubNavigatorFragment.Listener, InputListener
                                                     )
                                                 }
                                             }
+                                            Spacer(modifier = Modifier.height(8.dp))
                                             Row(
-                                                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 8.dp, vertical = 4.dp),
                                                 horizontalArrangement = Arrangement.SpaceBetween,
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
                                                 Text(
-                                                    text = "Page curl animation",
-                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    text = "Page Turn Style",
+                                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
                                                     color = colorScheme.secondary
                                                 )
-                                                Switch(
-                                                    checked = pageCurl,
-                                                    onCheckedChange = { pageCurl = it },
-                                                    colors = SwitchDefaults.colors(
-                                                        checkedThumbColor = Teal,
-                                                        checkedTrackColor = colorScheme.secondary,
-                                                        uncheckedThumbColor = colorScheme.secondary,
-                                                        uncheckedTrackColor = Teal,
-                                                        uncheckedBorderColor = colorScheme.secondary
+                                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                    FilterChip(
+                                                        selected = pageCurl,
+                                                        onClick = { pageCurl = true },
+                                                        label = { Text("Curl") },
+                                                        leadingIcon = {
+                                                            Icon(
+                                                                imageVector = Icons.AutoMirrored.Filled.MenuBook,
+                                                                contentDescription = null,
+                                                                modifier = Modifier.size(16.dp)
+                                                            )
+                                                        },
+                                                        colors = FilterChipDefaults.filterChipColors(
+                                                            selectedContainerColor = colorScheme.secondary,
+                                                            selectedLabelColor = Teal,
+                                                            selectedLeadingIconColor = Teal,
+                                                            containerColor = colorScheme.secondary.copy(alpha = 0.15f),
+                                                            labelColor = colorScheme.secondary,
+                                                            iconColor = colorScheme.secondary
+                                                        ),
+                                                        border = FilterChipDefaults.filterChipBorder(
+                                                            enabled = true,
+                                                            selected = pageCurl,
+                                                            borderColor = colorScheme.secondary.copy(alpha = 0.4f),
+                                                            selectedBorderColor = colorScheme.secondary
+                                                        )
                                                     )
-                                                )
+                                                    FilterChip(
+                                                        selected = !pageCurl,
+                                                        onClick = { pageCurl = false },
+                                                        label = { Text("Slide") },
+                                                        leadingIcon = {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Swipe,
+                                                                contentDescription = null,
+                                                                modifier = Modifier.size(16.dp)
+                                                            )
+                                                        },
+                                                        colors = FilterChipDefaults.filterChipColors(
+                                                            selectedContainerColor = colorScheme.secondary,
+                                                            selectedLabelColor = Teal,
+                                                            selectedLeadingIconColor = Teal,
+                                                            containerColor = colorScheme.secondary.copy(alpha = 0.15f),
+                                                            labelColor = colorScheme.secondary,
+                                                            iconColor = colorScheme.secondary
+                                                        ),
+                                                        border = FilterChipDefaults.filterChipBorder(
+                                                            enabled = true,
+                                                            selected = !pageCurl,
+                                                            borderColor = colorScheme.secondary.copy(alpha = 0.4f),
+                                                            selectedBorderColor = colorScheme.secondary
+                                                        )
+                                                    )
+                                                }
                                             }
                                             Spacer(modifier = Modifier.height(8.dp))
                                         }
