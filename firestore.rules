@@ -116,16 +116,14 @@ service cloud.firestore {
       allow read, write: if isSelf(userId);
     }
 
-    match /ai_suggestions_requests/{id} {
-      allow read, write: if isSignedIn();
-    }
-
     // ------------------------------------------------------------------ groups
 
     match /groups/{groupId} {
       // Any signed-in user may look a code up — that is how joining works, and how
-      // generateUniqueCode checks a candidate code is free.
-      allow read: if isSignedIn();
+      // generateUniqueCode checks a candidate code is free. `get` only, not `list`: the app
+      // always fetches one group by its code, and allowing queries would let any signed-in
+      // user enumerate every group's name and member ids.
+      allow get: if isSignedIn();
 
       allow create: if isSignedIn()
                     && request.auth.uid in request.resource.data.groupMembers;
